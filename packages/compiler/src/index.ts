@@ -112,7 +112,9 @@ import { RuntimePackError } from "./backend/runtime-pack.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
+  nativeProfileLayout,
   nativeProfileRefusal,
+  profileHasContextCounts,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
@@ -619,6 +621,7 @@ async function compileExecutableNative(
   /** The kept LLVM text's shared name, when `llvmPath` is the build's private copy of it
    * (BuildSources): the spelling clang sees and native cache keys name. */
   llvmVisiblePath?: string,
+  profileLayout = false,
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -635,6 +638,7 @@ async function compileExecutableNative(
       ...(staticLink ? { staticLink: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
       ...(profileGenerate ? { profileGenerate: true } : {}),
+      ...(profileLayout ? { profileLayout: true } : {}),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -702,6 +706,8 @@ async function compileExecutableNative(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
+    ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
@@ -818,8 +824,8 @@ async function removeNativeProgramObject(
 async function readNativeProfile(
   opts: CompileRequestOptions,
 ): Promise<NativeProfileOptions | undefined> {
-  if (opts.profileGenerate !== undefined) return { generate: opts.profileGenerate };
-  if (opts.profileUse === undefined) return undefined;
+  const generate = opts.profileGenerate;
+  if (opts.profileUse === undefined) return generate === undefined ? undefined : { generate };
   const path = resolve(opts.profileUse);
   let bytes: Buffer;
   try {
@@ -829,7 +835,12 @@ async function readNativeProfile(
       `cannot read --profile-use file ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
+  const use = {
+    path,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+    contextSensitive: profileHasContextCounts(bytes),
+  };
+  return generate === undefined ? { use } : { generate, use };
 }
 
 /** The digest of the request's function layout file, which keys the
@@ -1024,6 +1035,7 @@ async function prepareExecutableInput(
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
+      timing,
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
@@ -1878,6 +1890,7 @@ async function compileTracked(
         nativeProgramObject?.partitionPaths,
         profile?.generate !== undefined,
         hitSources.llvmPath,
+        nativeProfileLayout(profile),
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -2025,6 +2038,7 @@ async function compileTracked(
       nativeProgramObject?.partitionPaths,
       profile?.generate !== undefined,
       llvmPath,
+      nativeProfileLayout(profile),
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
@@ -2532,6 +2546,7 @@ async function compileLibraryTracked(
       wasi: buildPlatform === "wasi",
       objectAudit: opts.sanitize === true,
       sanitizeAttributes: opts.sanitize === true,
+      timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
     });
     timing("llvm-emit", {

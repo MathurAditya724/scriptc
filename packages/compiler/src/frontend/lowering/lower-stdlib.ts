@@ -1,6 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 
+import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
@@ -34,6 +35,7 @@ import {
 import {
   esmNamedImportLinkCrash,
   isCjsJsFile,
+  isJsSourceFile,
   locOf,
   npmPackageNameOf,
   type StartupCrash,
@@ -1032,6 +1034,12 @@ export function fenceStaticAbortControllerMemberRead(
   );
 }
 
+/** JavaScript sources read web stream values through their handles'
+ * checked-dynamic surfaces (scr_webstreams.c), not the static lowerings. */
+function inJavaScript(node: ts.Node): boolean {
+  return isJsSourceFile(ts.getSourceFileOfNode(node));
+}
+
 function isStdlibFetchInterface(lowerer: Lowerer, node: ts.Node, owner: string): ts.Symbol | null {
   const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node));
   for (const symbol of [type.getSymbol(), type.getAliasSymbol()]) {
@@ -1383,6 +1391,7 @@ export function fenceStaticReadableStreamMember(
   access: StaticResponseAccess,
   use: "read" | "call",
 ): IrExpr | null {
+  if (inJavaScript(access.expression)) return null;
   const sym = isStdlibFetchInterface(lowerer, access.expression, "ReadableStream");
   if (!sym) return null;
   const members = fetchAccessMemberNames(lowerer, access);
@@ -1487,6 +1496,9 @@ export function lowerStaticFetchCompanionCall(
     return null;
   }
   const root = call.expression.expression;
+  // JavaScript reads the web stream classes as constructor values
+  // (web-streams-dyn.ts).
+  if (webStreamClassKindOf(lowerer, root) !== null) return null;
   const symbol = lowerer.resolveValueSymbol(root);
   if ((!symbol || !lowerer.isStdlibSymbol(symbol)) && !isStreamWebReadableStream(lowerer, root))
     return null;
@@ -1506,7 +1518,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortTimeout",
+            fn: "abort.timeout",
             args: [first],
             type: DYN,
             loc,
@@ -1516,7 +1528,7 @@ export function lowerStaticFetchCompanionCall(
         if (call.arguments.nodes.length === 0) {
           return {
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [dynUndefinedExpr(loc)],
             type: DYN,
             loc,
@@ -1529,7 +1541,7 @@ export function lowerStaticFetchCompanionCall(
           lowerLiveWebValue(lowerer, call.arguments.nodes[0]!),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortNow",
+            fn: "abort.now",
             args: [first],
             type: DYN,
             loc,
@@ -1547,7 +1559,7 @@ export function lowerStaticFetchCompanionCall(
             : dynUndefinedExpr(loc),
           (first) => ({
             kind: "libCall",
-            fn: "fetch.abortAny",
+            fn: "abort.any",
             args: [first],
             type: DYN,
             loc,
@@ -1689,6 +1701,7 @@ export function lowerStaticReadableStreamControllerCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length > 1 ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
@@ -1745,6 +1758,7 @@ export function lowerStaticReadableStreamCancelCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length > 1 ||
     call.arguments.nodes.some((argument) => ts.isSpreadElement(argument)) ||
@@ -1892,7 +1906,7 @@ export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression
 
   const result: IrExpr = {
     kind: "libCall",
-    fn: "fetch.abortControllerNew",
+    fn: "abort.controllerNew",
     args: [],
     type: DYN,
     loc,
@@ -2169,6 +2183,7 @@ export function lowerStaticReadableStreamReaderCall(
 ): IrExpr | null {
   const access = call.expression;
   if (
+    inJavaScript(call) ||
     call.questionDotToken ||
     call.arguments.nodes.length !== 0 ||
     (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
