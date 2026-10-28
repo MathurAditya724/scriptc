@@ -6748,6 +6748,7 @@ export class Lowerer {
         isUndefined: (node) =>
           node.text === "undefined" &&
           ((typeOrNull(node)?.flags ?? 0) & ts.TypeFlags.Undefined) !== 0,
+        neverReturns: (call) => ((typeOrNull(call)?.flags ?? 0) & ts.TypeFlags.Never) !== 0,
       });
       presenceProofs.set(use, proven);
       return proven;
