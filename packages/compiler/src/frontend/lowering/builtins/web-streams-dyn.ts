@@ -1,9 +1,18 @@
+import { staticFetchMembers } from "../../../compat/fetch-profile.js";
 import { numLit } from "../../../ir/build.js";
-import { BOOL, DYN, STRING, type IrExpr, type SrcLoc } from "../../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrFunction,
+  type SrcLoc,
+} from "../../../ir/ir.js";
 import * as ts from "../../ts7/adapter.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { constituentTypes } from "../../ts7/checker.js";
-import type { Lowerer } from "../lowerer.js";
+import { ENTRY_NAME, type Lowerer } from "../lowerer.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import { streamWebImportOf } from "./module-bindings.js";
 
@@ -220,4 +229,73 @@ export function isWebStreamValueInJavaScript(lowerer: Lowerer, node: ts.Expressi
   if (ts.isPropertyAccessExpression(expr) && isWebStreamMemberInJavaScript(lowerer, expr))
     return true;
   return typeInvolvesWebStream(lowerer, lowerer.typeOf(node));
+}
+
+/** Whether a checker type is the stdlib ReadableStream, or a union with it. */
+function isReadableStreamType(lowerer: Lowerer, type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Union) !== 0)
+    return constituentTypes(type).some((t) => isReadableStreamType(lowerer, t));
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "ReadableStream" &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** Whether a member access resolves to a member of the stdlib
+ * ReadableStream interface. */
+function isReadableStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const member = lowerer.checker.getSymbolAtLocation(access.name);
+  if (member === undefined || !lowerer.isStdlibSymbol(member)) return false;
+  let owner: ts.Node | undefined = member.declarations[0]?.parent;
+  while (owner !== undefined && !ts.isInterfaceDeclaration(owner)) owner = owner.parent;
+  return owner !== undefined && owner.name.text === "ReadableStream";
+}
+
+/** Whether a JavaScript source of the program uses a ReadableStream member
+ * that the fetch unit's own stream does not implement (the fetch profile's
+ * readableStreamUnsupported): a member access the checker resolves to the
+ * interface, or `for await` over a ReadableStream value. */
+function programUsesWebStreamOnlyMembers(lowerer: Lowerer): boolean {
+  const members = staticFetchMembers().readableStreamUnsupported;
+  const iterates = members.has("[Symbol.asyncIterator]");
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || !isJsSourceFile(file)) continue;
+    let found = false;
+    ts.walkPreorder(file, (node) => {
+      if (
+        (ts.isPropertyAccessExpression(node) &&
+          members.has(node.name.text) &&
+          isReadableStreamMember(lowerer, node)) ||
+        (iterates &&
+          ts.isForOfStatement(node) &&
+          node.awaitModifier !== undefined &&
+          isReadableStreamType(lowerer, lowerer.typeOf(node.expression)))
+      ) {
+        found = true;
+        return "stop";
+      }
+      return undefined;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
+/** Links the web stream classes into a program whose JavaScript uses a
+ * ReadableStream member the fetch unit's own stream lacks: a fetch body's
+ * handle stands for a web ReadableStream once such a member is used
+ * (scr_fetch.c, sf_stream_web_view). %main installs the classes first. A
+ * program that names one of the classes links them already. */
+export function installFetchBodyWebStreams(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (programNamesWebStreamClass(lowerer) || !programUsesWebStreamOnlyMembers(lowerer)) return;
+  const main = functions.find((fn) => fn.name === ENTRY_NAME);
+  if (!main) return;
+  const loc = main.loc;
+  main.body.unshift({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "webstream.install", args: [], type: VOID, loc },
+    loc,
+  });
 }

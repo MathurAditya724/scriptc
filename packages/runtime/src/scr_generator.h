@@ -233,6 +233,24 @@ typedef struct ScrWebStreamBridge {
   bool (*unusable)(const ScrDyn *stream);
 } ScrWebStreamBridge;
 extern SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge;
+/* The read side of a stream another unit implements, which
+ * scr_webstream_readable_over reads: read_into queues one read request on
+ * it (false with the exception pending), cancel cancels it (+1 promise),
+ * and release drops the context. */
+typedef struct ScrWebStreamSource {
+  bool (*read_into)(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx);
+  ScrPromise *(*cancel)(void *ctx, ScrDyn *reason);
+  void (*release)(void *ctx);
+} ScrWebStreamSource;
+/* A checked-dynamic ReadableStream (+1 handle) with a zero high-water mark
+ * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
+ * reference moves in; the stream releases it when it goes away. */
+ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* Installs the web stream classes (webstream.install): a program whose
+ * JavaScript uses a ReadableStream member the fetch unit's streams lack
+ * calls it at startup, which links the classes that fetch bodies then
+ * stand for. */
+void scr_webstream_install(void);
 /* The web stream class constructors for checked-dynamic code, by kind
  * (scr_webstreams.c: ReadableStream, ReadableStreamDefaultReader,
  * ReadableStreamDefaultController, CountQueuingStrategy,

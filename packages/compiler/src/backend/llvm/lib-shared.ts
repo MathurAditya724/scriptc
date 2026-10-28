@@ -120,6 +120,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",
   "webstream.instanceOf": "scr_webstream_instanceof",
+  "webstream.install": "scr_webstream_install",
   "mime.typeNew": "scr_mime_type_new",
   "mime.typeParse": "scr_mime_type_parse",
   "mime.paramsNew": "scr_mime_params_new",
