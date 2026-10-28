@@ -27,6 +27,8 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  typeKey,
+  unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
@@ -461,12 +463,21 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           : lowerer.maybeNarrow(obj, expr.expression);
       }
       const idx = tupleLiteralIndex(expr.argumentExpression);
+      const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
+      const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       if (idx === null) {
-        lowerer.unsupported(
-          "SC1090",
-          expr.argumentExpression,
-          "tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...)",
-        );
+        // A RUNTIME index over a fixed-shape tuple: the positional dispatch
+        // answers the element at an integer index in [0, arity) and
+        // undefined for anything else — exactly Node's array-like tuple
+        // read, out-of-range and fractional indices included.
+        if (obj.type.kind !== "record") {
+          lowerer.unsupported(
+            "SC1090",
+            expr.argumentExpression,
+            "tuple indexing with a non-literal index on a value that is a union of tuples (narrow it to one tuple first)",
+          );
+        }
+        return lowerTupleIndexRead(lowerer, expr, obj, shapeId, actualShape, locOf(expr));
       }
       // A union of tuples asserted to one tuple view (`(r as readonly
       // [boolean, T | E])[0]`) still holds the union.
@@ -474,8 +485,6 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         const element = lowerUnionTupleRead(lowerer, obj, idx, locOf(expr));
         if (element) return lowerer.maybeNarrow(element, expr);
       }
-      const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
-      const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       const fieldType = actualShape.fields.find((f) => f.name === String(idx))?.type;
       if (fieldType === undefined) lowerer.badType(expr, lowerer.typeOf(expr)); // OOB smuggled past tsc
       const get: IrExpr = {
@@ -1561,6 +1570,114 @@ function tupleLiteralIndex(node: ts.Expression): number | null {
   if (!ts.isNumericLiteral(e)) return null;
   const n = Number(e.text);
   return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** `t[i]` on a tuple with a RUNTIME index. A tuple is a fixed-shape
+ * positional record, so the read is a chain of position comparisons: the
+ * element in [0, arity) and undefined for every other index — a fraction,
+ * a negative, NaN, Infinity, or one past the end, exactly Node's read of
+ * the underlying array. This mirrors the array index read
+ * (lowerSafeIndexRead): the result is the join of the element types armed
+ * with undefined, so a consumer observes the miss like any other optional
+ * element read. The chain stays inline because the arity is a compile-time
+ * constant — at most a handful of comparisons per read. */
+function lowerTupleIndexRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  obj: IrExpr,
+  shapeId: string,
+  shape: IrRecordShape,
+  loc: SrcLoc,
+): IrExpr {
+  const index = lowerOptionalNumber(
+    lowerer,
+    lowerer.lowerExpr(expr.argumentExpression),
+    locOf(expr.argumentExpression),
+    expr.argumentExpression,
+  );
+  if (index.type.kind !== "f64") {
+    lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+  }
+  // The answer type: the join of the element types plus undefined.
+  const arms: IrType[] = [];
+  const seen = new Set<string>();
+  const push = (t: IrType): void => {
+    if (t.kind === "union") {
+      const def = lowerer.unions.get(t.unionId);
+      if (!def) {
+        arms.push(t);
+        return;
+      }
+      for (const arm of def.arms) push(arm);
+      return;
+    }
+    const key = typeKey(t);
+    if (!seen.has(key)) {
+      seen.add(key);
+      arms.push(t);
+    }
+  };
+  for (const field of shape.fields) push(field.type);
+  push(UNDEFINED_T);
+  if (arms.some((a) => a.kind === "void" || a.kind === "generator" || a.kind === "caught")) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
+    );
+  }
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  if (arms.length > 1 && !unionContainerArmsOk(arms)) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (the element types have no one native representation)`,
+    );
+  }
+  const resultT: IrType =
+    arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
+  // Both operands are read once per position: hold the ones that cannot be
+  // repeated, receiver first (JavaScript evaluates it before the index).
+  const stmts: IrStmt[] = [];
+  const settle = (value: IrExpr, name: string): IrExpr => {
+    if (isSafeToRepeat(value)) return value;
+    const temp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+    return varRef(temp.id, temp.type, loc);
+  };
+  const stableObj = settle(obj, "%tupleReceiver");
+  const stableIndex = settle(index, "%tupleIndex");
+  const readAt = (position: number): IrExpr => {
+    const field = shape.fields[position]!;
+    const get: IrExpr = {
+      kind: "recordGet",
+      obj: stableObj,
+      shapeId,
+      field: field.name,
+      type: field.type,
+      loc,
+    };
+    return lowerer.coerceToExpected(get, resultT);
+  };
+  let answer: IrExpr = lowerer.wrappedUndefined(resultT, loc) ?? {
+    kind: "unitLit",
+    unit: "undefined",
+    type: UNDEFINED_T,
+    loc,
+  };
+  for (let position = shape.fields.length - 1; position >= 0; position--) {
+    const cond: IrExpr = {
+      kind: "bin",
+      op: "===",
+      left: stableIndex,
+      right: numLit(position, loc),
+      type: BOOL,
+      loc,
+    };
+    answer = { kind: "ternary", cond, then: readAt(position), else_: answer, type: resultT, loc };
+  }
+  if (stmts.length === 0) return answer;
+  return { kind: "seqExpr", stmts, result: answer, type: resultT, loc };
 }
 
 export function lowerElementCompoundParts(
