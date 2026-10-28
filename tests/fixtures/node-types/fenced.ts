@@ -25,7 +25,7 @@ fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
   console.log(response.type);
-  response.clone();
+  response.formData();
 }
 void inspectResponse;
 ReadableStream.from(new Set([1, 2]));

@@ -205,6 +205,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.wasm, "scr_wasm.c"),
   // Module namespace objects as checked-dynamic values.
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
+  // A module namespace as the frozen null-prototype object typed code sees.
+  unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||

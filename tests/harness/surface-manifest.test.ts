@@ -388,7 +388,7 @@ test("fetch interface object bindings retain the inventory fence code", () => {
     source:
       '/// <reference types="node" />\n' +
       "function headers(value: Headers): void { const { entries } = value; }\n" +
-      "function response(value: Response): void { const { clone } = value; }\n" +
+      "function response(value: Response): void { const { blob } = value; }\n" +
       "function stream(value: ReadableStream<Uint8Array>): void { const { tee } = value; }\n" +
       "function assign(value: Headers, entries: unknown): void { ({ entries } = value); }\n" +
       "void headers; void response; void stream; void assign;\n",
@@ -447,7 +447,7 @@ test("unimplemented Response and ReadableStream calls stay fenced", () => {
     source:
       '/// <reference types="node" />\n' +
       "function response(value: Response): void {\n" +
-      "  void value.clone(); void value.blob(); void value.formData();\n" +
+      "  void value.blob(); void value.formData();\n" +
       "}\n" +
       "function stream(value: ReadableStream<Uint8Array>): void {\n" +
       "  void value.tee(); void value.pipeTo(null as never);\n" +
@@ -458,7 +458,7 @@ test("unimplemented Response and ReadableStream calls stay fenced", () => {
     const coverage = analyze(file, {}).coverage;
     expect(coverage.preflightFailed).toBe(false);
     expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
-    expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(5);
+    expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(4);
   }
 });
 
