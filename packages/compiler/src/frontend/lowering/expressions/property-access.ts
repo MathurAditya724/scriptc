@@ -3234,6 +3234,22 @@ export function lowerGroupsProjection(
 
 /** Field reads use the shared FieldTarget union. Native method reads select
  * an interned unbound callable; invocation supplies its receiver separately. */
+/** Whether a receiver is a binding or `this`, or a chain of property reads
+ * from one whose every member is a plain property (no accessor), so that
+ * reading it has no effect. */
+function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
+  let current = node;
+  while (ts.isPropertyAccessExpression(current)) {
+    if (current.questionDotToken) return false;
+    const member = lowerer.checker.getSymbolAtLocation(current.name);
+    if (member === undefined || (member.flags & ts.SymbolFlags.Property) === 0) return false;
+    if ((member.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0)
+      return false;
+    current = current.expression;
+  }
+  return ts.isIdentifier(current) || current.kind === ts.SyntaxKind.ThisKeyword;
+}
+
 export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
   // A checked receiver already owns its property table. An ambient
   // generic method signature must not divert its value into native
@@ -3388,22 +3404,71 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
     }
   }
   // `t.length` on a tuple: the arity CONSTANT (tuples are fixed-shape —
-  // the checker types it as the literal arity too). Folding discards the
-  // receiver's evaluation, so only side-effect-free receivers fold;
-  // anything else (a call result) binds to a const first.
+  // the checker types it as the literal arity too). A binding or `this`,
+  // or a chain of plain property reads from one, folds; any other receiver
+  // (a call result, a ternary, an assertion, a chain through an accessor)
+  // is evaluated first, for its side effects and exceptions, and its value
+  // discarded.
   if (receiverIr?.kind === "record" && expr.name.text === "length") {
     const shape = lowerer.shapes.get(receiverIr.shapeId);
     if (shape?.tuple) {
-      let root: ts.Expression = expr.expression;
-      while (ts.isPropertyAccessExpression(root)) root = root.expression;
-      if (!ts.isIdentifier(root) && root.kind !== ts.SyntaxKind.ThisKeyword) {
-        lowerer.unsupported(
-          "SC1090",
-          expr,
-          "'.length' of a computed tuple expression (the arity is a constant — bind the tuple to a const first)",
-        );
+      const arity: IrExpr = {
+        kind: "numLit",
+        value: shape.fields.length,
+        type: F64,
+        loc: locOf(expr),
+      };
+      if (plainReadChain(lowerer, expr.expression)) return arity;
+      const receiver = checkerArray ?? lowerer.lowerExpr(expr.expression);
+      const loc = locOf(expr);
+      // An unchecked element read (`rows[i].length` with `rows: T[]`) answers
+      // the element's optional value: a missing element is undefined, and
+      // reading `length` from it throws Node's TypeError.
+      if (receiver.type.kind === "union") {
+        const unionId = receiver.type.unionId;
+        const held = lowerer.declareHiddenLocal("%tupleLengthReceiver", receiver.type);
+        let result: IrExpr = arity;
+        for (const unit of ["undefined", "null"] as const) {
+          const tag = lowerer.armTag(unionId, unit === "undefined" ? UNDEFINED_T : NULL_T);
+          if (tag < 0) continue;
+          result = {
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag,
+              negated: false,
+              value: varRef(held.id, receiver.type, loc),
+              type: BOOL,
+              loc,
+            },
+            then: nodeThrowExpr(
+              1,
+              "",
+              `Cannot read properties of ${unit} (reading 'length')`,
+              F64,
+              loc,
+            ),
+            else_: result,
+            type: F64,
+            loc,
+          };
+        }
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+          result,
+          type: F64,
+          loc,
+        };
       }
-      return { kind: "numLit", value: shape.fields.length, type: F64, loc: locOf(expr) };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+        result: arity,
+        type: F64,
+        loc,
+      };
     }
   }
   return null;
