@@ -70,4 +70,21 @@ try {
   console.log("caught", (e as Error).message);
 }
 
+// An unchecked element read past the end is undefined, so its `length`
+// throws, also through a field holding the array.
+const rows: [number, string][] = [[1, "a"]];
+let missing = 5;
+try {
+  console.log(rows[missing].length);
+} catch (e) {
+  console.log("missing", String(e));
+}
+console.log("present", rows[0].length);
+const table: { rows: [number, number][] } = { rows: [] };
+try {
+  console.log(table.rows[missing - 3].length);
+} catch (e) {
+  console.log("missing field", String(e));
+}
+
 console.log(log.join(" | "));

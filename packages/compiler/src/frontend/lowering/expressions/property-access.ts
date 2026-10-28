@@ -3407,12 +3407,54 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
       };
       if (plainReadChain(lowerer, expr.expression)) return arity;
       const receiver = checkerArray ?? lowerer.lowerExpr(expr.expression);
+      const loc = locOf(expr);
+      // An unchecked element read (`rows[i].length` with `rows: T[]`) answers
+      // the element's optional value: a missing element is undefined, and
+      // reading `length` from it throws Node's TypeError.
+      if (receiver.type.kind === "union") {
+        const unionId = receiver.type.unionId;
+        const held = lowerer.declareHiddenLocal("%tupleLengthReceiver", receiver.type);
+        let result: IrExpr = arity;
+        for (const unit of ["undefined", "null"] as const) {
+          const tag = lowerer.armTag(unionId, unit === "undefined" ? UNDEFINED_T : NULL_T);
+          if (tag < 0) continue;
+          result = {
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag,
+              negated: false,
+              value: varRef(held.id, receiver.type, loc),
+              type: BOOL,
+              loc,
+            },
+            then: nodeThrowExpr(
+              1,
+              "",
+              `Cannot read properties of ${unit} (reading 'length')`,
+              F64,
+              loc,
+            ),
+            else_: result,
+            type: F64,
+            loc,
+          };
+        }
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+          result,
+          type: F64,
+          loc,
+        };
+      }
       return {
         kind: "seqExpr",
         stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
         result: arity,
         type: F64,
-        loc: locOf(expr),
+        loc,
       };
     }
   }
