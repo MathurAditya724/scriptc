@@ -603,14 +603,16 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const globalReleases = exitReleaseLines("g");
   const asyncEntry = emitter.fnByName.get(emitter.mod.entry)?.async === true;
   const entryMayThrow = emitter.mayThrow.has(emitter.mod.entry);
-  // The event loop runs when timers appeared OR any async/generator
-  // function exists (the C main's hasAsync || hasGenerators ||
-  // usesTimers gate). Generator programs run
+  // The event loop runs when timers appeared, a promise is made (the loop's
+  // end reports an unhandled rejection, Node's exit 1), OR any
+  // async/generator function exists (the C main's hasAsync ||
+  // hasGenerators || usesTimers gate). Generator programs run
   // the loop too: its exit accounting notes still-suspended generator
   // fibers as abandoned, so the RC audit downgrades exactly like the
   // async loop-exhaustion story.
   const runsLoop =
     emitter.usesTimers ||
+    emitter.usesPromises ||
     emitter.ffiHasForeignCallback ||
     emitter.mod.functions.some((f) => f.async === true || f.generator !== undefined);
   const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];

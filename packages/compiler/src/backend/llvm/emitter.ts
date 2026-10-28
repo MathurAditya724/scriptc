@@ -1635,6 +1635,10 @@ export class LlEmitter {
   /** setTimeout and friends appeared somewhere: main must run the event
    * loop even in programs with no async functions. */
   usesTimers = false;
+  /** A promise is made somewhere (Promise statics, `new Promise`,
+   * Promise.withResolvers): main runs the event loop, whose end reports an
+   * unhandled rejection as Node does, even without async functions. */
+  usesPromises = false;
   /** The program calls mock.timers members (moduleUsesMockTimers): timer
    * calls emit scr_test.c's mock-aware entry points. */
   readonly mockTimers: boolean;
@@ -5717,6 +5721,7 @@ export class LlEmitter {
       flags: {
         usesCoroutines: this.usesCoroutines,
         usesTimers: this.usesTimers,
+        usesPromises: this.usesPromises,
         usesGenSlots: this.usesGenSlots,
         needsUnionNone: this.needsUnionNone,
         needsNullableAbsent: this.needsNullableAbsent,
@@ -5754,6 +5759,7 @@ export class LlEmitter {
     const flags = chunk.flags;
     this.usesCoroutines ||= flags.usesCoroutines;
     this.usesTimers ||= flags.usesTimers;
+    this.usesPromises ||= flags.usesPromises;
     this.usesGenSlots ||= flags.usesGenSlots;
     this.needsUnionNone ||= flags.needsUnionNone;
     this.needsNullableAbsent ||= flags.needsNullableAbsent;
