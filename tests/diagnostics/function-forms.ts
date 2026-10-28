@@ -41,7 +41,8 @@ function outer(): number {
   return inner(1) + inner();
 }
 // Spread into a REST parameter lowers (the pack copies the spread's
-// elements); the fences that remain live in spread-fences.ts.
+// elements); the object and array spread shapes are covered by the
+// differential corpus.
 const pair = [1, 2];
 console.log(rest(...pair));
 unionDefault();
