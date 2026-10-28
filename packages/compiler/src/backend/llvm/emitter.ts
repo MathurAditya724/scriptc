@@ -88,6 +88,13 @@ import {
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
 import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
+import {
+  inlineArrayReads,
+  NO_INLINE_ARRAYS,
+  planInlineArrays,
+  type InlineArrayPlan,
+} from "../../ir/inline-arrays.js";
+import { inlineArraysApply, programLifetimeClassOf } from "./inline-arrays.js";
 import { pairRowSums } from "../../ir/row-pairs.js";
 import {
   allocatedLiteral,
@@ -353,6 +360,7 @@ import {
   classStructSym,
   programLifetimeClass,
   type LlClassMeta,
+  type LlInlineTail,
 } from "./classes.js";
 import { LifetimeRegions, REGION_TYPES } from "./regions.js";
 import {
@@ -695,6 +703,13 @@ function resultEntryTargets(mod: IrModule): ReadonlySet<string> {
   return targets;
 }
 
+/** The reads and constructions of inline array fields prepared for their
+ * layout (ir/inline-arrays.ts), where the target keeps them inline. */
+function inlineArraysPass(options: LlvmTargetOptions, mod: IrModule): IrModule {
+  if (!inlineArraysApply(mod, options)) return mod;
+  return inlineArrayReads(mod, planInlineArrays(mod, programLifetimeClassOf(mod)));
+}
+
 /** The emitter for `input` after the module passes every emission runs. */
 function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   // Facts are keyed by node identity: emit the same module whether it was
@@ -740,14 +755,17 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
           specializeCallbackCalls(
             specializeNumericCalls(
               pairRowSums(
-                inlineExpressionFunctions(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(
-                          freezeInitOnlyGlobals(
-                            holdCharLocalsAsUnits(
-                              dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                inlineArraysPass(
+                  options,
+                  inlineExpressionFunctions(
+                    foldConstantGlobals(
+                      copyStableCaptures(
+                        resolveSelfCaptures(
+                          hoistFinalFieldReads(
+                            freezeInitOnlyGlobals(
+                              holdCharLocalsAsUnits(
+                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                              ),
                             ),
                           ),
                         ),
@@ -1782,6 +1800,9 @@ export class LlEmitter {
   /** ProgramLifetime hierarchy roots (contract types): their instances are
    * immortal from construction (classes.ts programLifetimeClass). */
   readonly programLifetime: ReadonlySet<string>;
+  /** Inline array fields this emission may keep inline (ir/inline-arrays.ts);
+   * the classes that do have LlClassMeta.inlineTail. */
+  readonly inlineArrays: InlineArrayPlan;
   numericLocals = new Map<string, IrLocal>();
   captureIds = new Set<string>();
   /** Active induction bindings retain their width independently of size_t. */
@@ -2228,6 +2249,12 @@ export class LlEmitter {
         this.immutableFields,
         this.nodeIndex,
       );
+    // Inline array fields (ir/inline-arrays.ts), where the module passes
+    // prepared their reads and constructions.
+    this.inlineArrays =
+      options.debugSources === undefined && inlineArraysApply(mod, options)
+        ? planInlineArrays(mod, programLifetimeClassOf(mod))
+        : NO_INLINE_ARRAYS;
     const walkParameters = new Map<string, Set<number>>();
     if (this.debug === null) {
       const host = {
@@ -2569,6 +2596,7 @@ export class LlEmitter {
               return nullable !== null && isCompact(nullable.arm.className);
             }
           : undefined,
+        this.inlineArrays.classes,
       );
     this.compactRegion =
       mod.lib === undefined &&
@@ -4793,6 +4821,13 @@ export class LlEmitter {
     refs: "pointer" | "compressed" = "pointer",
   ): { ptr: string; type: IrType; inline: boolean; compressed: boolean } {
     const meta = this.classMetaOf(className);
+    // An inline array field's slot holds its element count: its reads and
+    // writes go through backend/llvm/inline-arrays.ts.
+    const tail = this.inlineTailOf(className);
+    if (tail !== undefined && meta.def.fields[tail.field]!.name === field)
+      throw new InternalCompilerError(
+        `llvm emitter bug: field pointer to the inline array field ${className}.${field}`,
+      );
     const { index, type, compressed } = classFieldIndex(meta, field, refs);
     const p = this.B.tmp();
     this.B.line(
@@ -7232,7 +7267,19 @@ export class LlEmitter {
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
+        const tail = this.inlineTailOf(className);
+        const tailField = tail === undefined ? undefined : meta.def.fields[tail.field]!;
         return {
+          ...(tail !== undefined && tailField !== undefined
+            ? {
+                tail: {
+                  name: tailField.name,
+                  countIndex: meta.compactSlots[tail.field]!,
+                  offset: tail.tailOffset,
+                  elem: { kind: "object" as const, className: tail.elemClass },
+                },
+              }
+            : {}),
           def: meta.def,
           hierarchy: meta.hierarchy,
           pre: meta.pre,
@@ -7240,9 +7287,10 @@ export class LlEmitter {
           runtimeRooted: meta.root.def.runtime === true,
           idInRc: meta.idInRc,
           compact: meta.compact,
-          // Inline scalar-union fields are plain bits: nothing to push.
-          fields: meta.def.fields.flatMap((f) =>
-            this.inlineUnions.classField(className, f.name)
+          // Inline scalar-union fields are plain bits: nothing to push. An
+          // inline array field's elements follow the fixed fields (`tail`).
+          fields: meta.def.fields.flatMap((f, i) =>
+            this.inlineUnions.classField(className, f.name) || tail?.field === i
               ? []
               : [
                   {
@@ -7465,6 +7513,13 @@ export class LlEmitter {
     return emitReadReceiver(this, e);
   }
 
+  /** The inline array field of `className`'s instances, where they keep it
+   * inline (LlClassMeta.inlineTail; classes.ts gives their `new` the count). */
+  inlineTailOf(className: string): LlInlineTail | undefined {
+    const meta = this.classMeta.get(className);
+    return meta !== undefined && meta.compact && this.compactRegion ? meta.inlineTail : undefined;
+  }
+
   /** The frame slot a reassigned stack-object local keeps for its value. */
   stackObjectSlot(localId: string, type: IrType): string {
     let slot = this.stackObjectSlots.get(localId);
@@ -7654,6 +7709,15 @@ export class LlEmitter {
     return canBorrowReceiver(this, e);
   }
 
+  /** A read of an inline array field (ir/inline-arrays.ts). It makes a view
+   * of the elements that the read owns: no field holds an array that could
+   * keep a borrowed copy alive. Known before the class layouts are, from
+   * the module's plan; layouts that keep the field an ordinary array only
+   * lose the borrow. */
+  inlineArrayRead(e: IrExpr): boolean {
+    return e.kind === "fieldGet" && this.inlineArrays.classes.get(e.className)?.field === e.field;
+  }
+
   /** A reference held as one plain pointer that emitReadReceiver can read
    * without owning: class instances, records, arrays, strings, typed arrays
    * and nullable-pointer unions. Tagged union boxes, closures and dynamic
@@ -7687,7 +7751,7 @@ export class LlEmitter {
     if (matchMapRead(e, this.boxedUnionsById)) return false;
     switch (e.kind) {
       case "fieldGet":
-        return this.nullableFieldGet(e) === null;
+        return this.nullableFieldGet(e) === null && !this.inlineArrayRead(e);
       case "recordGet":
         return true;
       // A keyed read whose hits are all the result's own pointer.
