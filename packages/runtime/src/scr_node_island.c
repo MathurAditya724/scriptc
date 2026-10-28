@@ -689,17 +689,22 @@ static void ni_open_modules(void) {
     ni_fatal("scriptc: cannot write this program's Node island modules to a private directory\n");
 }
 
-/* The calling module's path inside the tree: `<root>/<relative path>`. */
-static char *ni_caller_path(const ScrStr *relative) {
+/* A path inside the tree: `<root>/<relative path>`. */
+static char *ni_tree_path(const char *relative, size_t len) {
   size_t root = strlen(ni_root);
   bool slash = root > 0 && ni_root[root - 1] == '/';
-  char *path = malloc(root + 1 + relative->len + 1);
+  char *path = malloc(root + 1 + len + 1);
   if (path == NULL) ni_oom();
   memcpy(path, ni_root, root);
   if (!slash) path[root++] = '/';
-  memcpy(path + root, relative->data, relative->len);
-  path[root + relative->len] = '\0';
+  memcpy(path + root, relative, len);
+  path[root + len] = '\0';
   return path;
+}
+
+/* The calling module's path inside the tree. */
+static char *ni_caller_path(const ScrStr *relative) {
+  return ni_tree_path(relative->data, relative->len);
 }
 
 /* The bootstrap: the tree root for the host's resolution guard, then the
@@ -1158,6 +1163,8 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_host_listen,
     &ni_stack_limit,
     &ni_stack_start,
+    &scr_ni_settle_value,
+    &scr_ni_bytes_free,
 };
 
 typedef struct {
@@ -1186,6 +1193,7 @@ void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int a
 
 static void ni_stop_job(void *p) {
   (void)p;
+  scr_ni_stop();
   ni_bridge->stop();
 }
 
@@ -1194,6 +1202,13 @@ static void ni_stop_job(void *p) {
  * the events unit's own, which then finds them done), then Node stops. */
 static void ni_stop_atexit(void) {
   scr_run_exit_listeners((double)scr_exit_code_hint_get());
+  /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
+   * tests: acyclic island objects the program dropped are released). */
+  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  if (trace != NULL && strcmp(trace, "handles") == 0) {
+    fflush(stdout);
+    fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
+  }
   ni_on_node_stack(ni_stop_job, NULL);
 }
 
@@ -1349,6 +1364,7 @@ static void ni_start(void) {
    * delivery; installed before the stop handler, whose 'exit' listeners
    * run first. */
   scr_events_install();
+  scr_ni_handles_install();
   scr_atexit(ni_stop_atexit);
   ni_hosted = *bridge;
   ni_hosted.run_loop = &ni_run_loop;
@@ -1364,6 +1380,21 @@ static void ni_start(void) {
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
 }
+
+const ScrNodeBridge *scr_ni_bridge(void) {
+  ni_start();
+  return ni_bridge;
+}
+
+const ScrNodeBridge *scr_ni_bridge_loaded(void) { return ni_bridge; }
+
+char *scr_ni_module_path(const ScrStr *path) {
+  if (path->len >= 2 && path->data[0] == '.' && path->data[1] == '/')
+    return ni_tree_path(path->data + 2, path->len - 2);
+  return ni_cstr_of(path->data, path->len);
+}
+
+void scr_ni_on_node_stack(void (*job)(void *), void *arg) { ni_on_node_stack(job, arg); }
 
 /* ── calls ────────────────────────────────────────────────────────────── */
 

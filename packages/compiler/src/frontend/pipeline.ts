@@ -49,6 +49,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
@@ -128,12 +129,18 @@ export interface Frontend {
 }
 
 /** Hosts own transport lifetimes; shared compiler stages own the frontend. */
-/** What a frontend computes beyond the build's own needs. */
+/** How a frontend loads the program, beyond its npm package selection. */
 export interface FrontendOptions {
+  /** Packages that run in Node islands (scope-B NI-4): never compiled,
+   * typed by their declarations. */
+  islandPackages?: ReadonlySet<string>;
   /** The Node island report (coverage): the project's scriptc settings and
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
   nodeIslands?: boolean;
+  /** The detector's scan alone, for a build that may run packages in Node
+   * islands (executable/prepare.ts decides which). */
+  islandScan?: boolean;
 }
 
 export type FrontendFactory = (
@@ -482,15 +489,21 @@ export function runFrontend(
       transitive.add(base);
       return base;
     });
-    return loadFrontend(
-      entryPath,
-      trackedLoader,
-      "lib",
-      externalTypes,
-      [...new Set(names)],
-      transitive,
-      options,
-    );
+    const islands = options.islandPackages ?? new Set<string>();
+    setFrontendIslands(islands);
+    try {
+      return loadFrontend(
+        entryPath,
+        trackedLoader,
+        "lib",
+        externalTypes,
+        [...new Set(names)].filter((name) => !islands.has(name)),
+        transitive,
+        options,
+      );
+    } finally {
+      setFrontendIslands(new Set());
+    }
   } catch (error) {
     for (const load of active) {
       // Preserve the original failure and attempt every remaining cleanup.
@@ -520,8 +533,10 @@ function loadFrontend(
   clearResolveCaches();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
-  // Node island detection (report-only): how each package was refused, and
-  // the modules of packages removed from the program.
+  // Node island detection (the report, or a build that may run islands):
+  // how each package was refused, and the modules of packages removed from
+  // the program.
+  const scanIslands = options.nodeIslands === true || options.islandScan === true;
   const refusals: RefusalRecord[] = [];
   const droppedScan: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] } = {
     modules: [],
@@ -532,7 +547,11 @@ function loadFrontend(
   };
   // Explicit library attempts bypass only the auto-selection heuristics.
   // The shared preflight/lowering refusal and dependency-closure checks remain.
+  // Node island packages are judged already: they stay out of the
+  // program, typed by their declarations (scope-B NI-4).
   const judged = new Set<string>(libraryNpmStatic);
+  if (options.islandPackages !== undefined)
+    for (const name of options.islandPackages) judged.add(name);
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
@@ -658,7 +677,7 @@ function loadFrontend(
     }
     const dropping = [...reasons.keys()].filter((p) => effective.has(p));
     if (dropping.length === 0) break;
-    if (options.nodeIslands === true) scanDroppedPackages(load, dropping, droppedScan);
+    if (scanIslands) scanDroppedPackages(load, dropping, droppedScan);
     for (const p of dropping) {
       effective.delete(p);
       statuses.push({ package: p, status: "refused", detail: reasons.get(p)! });
@@ -710,15 +729,13 @@ function loadFrontend(
       probe.dispose();
       if (probeDiags.some((d) => d.code === "SC0001")) dropWithNote(p);
     }
-    if (options.nodeIslands === true)
-      scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+    if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
     load.dispose();
     load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
     preflight = checkPreflight(load);
     if (preflight.some((d) => d.code === "SC0001") && effective.size > 0) {
       for (const p of [...effective]) dropWithNote(p);
-      if (options.nodeIslands === true)
-        scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+      if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);
@@ -820,29 +837,28 @@ function loadFrontend(
     },
     npmStatic: statuses,
     npmImportSites: npmSites,
-    nodeIslandScan:
-      options.nodeIslands !== true
-        ? undefined
-        : ({ userJs }) => {
-            const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
-            addDynamicImportGraph(finalLoad, files);
-            // Package edges matter only when the program has npm packages: one
-            // that loads, one that was refused, or one judged and dropped.
-            const npm =
-              statuses.length > 0 ||
-              droppedScan.modules.length > 0 ||
-              [...files].some((sf) => sf.fileName.includes("/node_modules/"));
-            const scanned = scanFiles(finalLoad.program, [...files], {
-              userJs,
-              dropped: false,
-              edges: npm,
-            });
-            return {
-              modules: [...droppedScan.modules, ...scanned.modules],
-              edges: [...droppedScan.edges, ...scanned.edges],
-              refusals,
-            };
-          },
+    nodeIslandScan: !scanIslands
+      ? undefined
+      : ({ userJs }) => {
+          const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
+          addDynamicImportGraph(finalLoad, files);
+          // Package edges matter only when the program has npm packages: one
+          // that loads, one that was refused, or one judged and dropped.
+          const npm =
+            statuses.length > 0 ||
+            droppedScan.modules.length > 0 ||
+            [...files].some((sf) => sf.fileName.includes("/node_modules/"));
+          const scanned = scanFiles(finalLoad.program, [...files], {
+            userJs,
+            dropped: false,
+            edges: npm,
+          });
+          return {
+            modules: [...droppedScan.modules, ...scanned.modules],
+            edges: [...droppedScan.edges, ...scanned.edges],
+            refusals,
+          };
+        },
     dispose: finalLoad.dispose,
   };
 }

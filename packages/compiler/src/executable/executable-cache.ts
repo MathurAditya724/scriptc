@@ -185,6 +185,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
+  nodeIslands?: string;
   /** Omitted unless shape inference's overlay compiles the packages
    * (frontend/shape-inference). */
   shapeOverlay?: true;
@@ -341,6 +343,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
@@ -389,6 +392,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
   hash
     .update(

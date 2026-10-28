@@ -116,6 +116,11 @@ export interface ScrDiagnostic {
    * alone does not say it (a computed require(), a native addon, `with`).
    * Report-only: never part of the rendered message. */
   reason?: string;
+  /** Runtime fences only: the fenced site is in a module's top-level code
+   * (outside every function body), so it runs, and throws, when the module
+   * evaluates. Island selection treats such a fence like one that needs the
+   * runtime (scope-B NI-4). */
+  moduleInit?: true;
   /** A runtime fence in a module's top-level code, outside every function
    * and class member body: it throws when the module initializes, which is
    * program startup for a module the entry imports. */
@@ -354,6 +359,34 @@ export function nodeIslandsOffModuleDiag(
     message: `user module '${file}' is marked to run in Node (${source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules"}) and Node islands are off`,
     loc,
     hint: "allow Node islands (--node-islands=auto or explicit), or remove the marking",
+  };
+}
+
+/** SC8001 — a package runs in a Node island (a note, once per island in
+ * the build output). */
+export function nodeIslandNoteDiag(
+  pkg: string,
+  version: string | null,
+  klass: string,
+  reason: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8001",
+    message: `package '${version === null ? pkg : `${pkg}@${version}`}' runs in a Node island: ${klass}: ${reason}`,
+    loc,
+    hint: "it runs in Node.js loaded into the program on first use; --node-islands=off makes this an error",
+  };
+}
+
+/** SC8010 — a value crosses an island boundary in a way NI-4 cannot keep
+ * exact yet (callbacks, native objects, remote promises). */
+export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `${what} cannot cross into or out of a Node island yet`,
+    loc,
+    hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
   };
 }
 

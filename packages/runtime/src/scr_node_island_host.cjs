@@ -14,7 +14,7 @@
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire, registerHooks } = require("node:module");
+const { createRequire, isBuiltin, registerHooks } = require("node:module");
 const { constants: osConstants } = require("node:os");
 const timers = require("node:timers");
 
@@ -155,6 +155,19 @@ function call(id, sync, file, specifier, name, argsJson) {
     (error) => nativeHost.settle(id, thrown(error)),
   );
   return undefined;
+}
+
+// ── island modules (scope-B NI-4) ──────────────────────────────────────
+// Island code loaded by absolute path: require (CommonJS, and require(esm)
+// for ES modules without top-level await) answers the exports; import
+// answers a promise of the namespace.
+const { pathToFileURL } = require("node:url");
+
+function load(path, esm) {
+  // A built-in module's name, with or without the node: prefix.
+  if (isBuiltin(path)) return require(path);
+  if (esm) return import(pathToFileURL(path).href);
+  return createRequire(path)(path);
 }
 
 // ── the hosted loop (scope-B NI-3) ─────────────────────────────────────
@@ -388,4 +401,5 @@ globalThis.__scriptcNodeIsland = {
   refImmediate,
   nextTick,
   emit,
+  load,
 };

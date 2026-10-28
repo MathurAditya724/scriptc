@@ -240,6 +240,7 @@ typedef enum {
 
 /* Tags added since the last pin, by name only (see above). */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(NODE_ISLAND) /* a Node island value (scr_node_island_handle.c) */ \
   Y(WS_BYTE_STRATEGY) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
   Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
   Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \

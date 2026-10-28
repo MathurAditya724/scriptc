@@ -1,6 +1,7 @@
 import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
+import { collectIslandImport } from "./lower-node-island.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -653,7 +654,13 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // graph: resolveImport follows its node_modules link to the loaded
       // TypeScript entry. Its internal `.js` spellings have already been
       // resolved to `.ts` by that graph.
-      if (!isRelativeSpecifier(spec) && resolveImport(lowerer.program, fp.sf, spec) !== null) {
+      const projectDep = isRelativeSpecifier(spec)
+        ? null
+        : resolveImport(lowerer.program, fp.sf, spec);
+      if (projectDep !== null) {
+        // A Node island package that tsconfig `paths` maps to its installed
+        // directory resolves to its declarations: it loads in Node.
+        if (projectDep.isDeclarationFile) collectIslandImport(lowerer, fp.sf, stmt, spec);
         continue;
       }
       const npm = resolveNpmImport(fp.sf.fileName, spec);
@@ -705,6 +712,9 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // it, %main throws before any init runs, and the bindings never
 
       if (npm !== null && probeNodeImportRefusal(fp.sf.fileName, spec) !== null) continue;
+      // A Node island package (scope-B NI-4): loaded in Node at this
+      // module's position, its bindings are island values.
+      if (collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       {
         lowerer.pushDiag(unsupportedPackageImportDiag(npm?.packageName ?? relPkg!, locOf(stmt)));
         continue;

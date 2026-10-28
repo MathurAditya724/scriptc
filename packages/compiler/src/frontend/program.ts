@@ -39,6 +39,7 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
+import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -124,6 +125,7 @@ import {
   isRelativeSpecifier,
   isWorkspacePackageName,
   npmPackageNameOf,
+  packageNameOfSpecifier,
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
@@ -5860,6 +5862,16 @@ function preflight7(load: LoadResult): {
           );
           continue;
         }
+        // A re-export from a Node island package that tsconfig `paths` maps
+        // to its installed directory: its declarations are no program
+        // module (the lowering reports the island boundary).
+        if (
+          projectReexport !== null &&
+          projectReexport.isDeclarationFile &&
+          !isRelativeSpecifier(fromSpec) &&
+          isFrontendIsland(packageNameOfSpecifier(fromSpec))
+        )
+          continue;
         const reDep = projectReexport;
         // `export * as ns from "./m"` re-exports the module NAMESPACE
         // object under a name: importers' `x.ns.member` reads resolve
@@ -5984,6 +5996,16 @@ function preflight7(load: LoadResult): {
       // Node's startup crash with Node's exact message; what keeps a compile
       // fence is unsupported builtin or types-only surface.
       if (isBare && npmStaticDep === null) {
+        // A Node island package that tsconfig `paths` maps to its
+        // installed directory resolves to its declarations here: it loads
+        // in Node, typed by them, like an island package resolved through
+        // node_modules (scope-B NI-4).
+        if (
+          projDep !== null &&
+          projDep.isDeclarationFile &&
+          isFrontendIsland(packageNameOfSpecifier(spec))
+        )
+          continue;
         if (projDep !== null && projDep.isDeclarationFile) {
           diags.push(
             unsupportedDiag(
@@ -6145,7 +6167,12 @@ function preflight7(load: LoadResult): {
                 ),
               );
             }
-          } else if (dep === null && !(!isRelative && ambientModules.has(spec))) {
+          } else if (
+            dep === null &&
+            !(!isRelative && ambientModules.has(spec)) &&
+            // A Node island module's namespace (scope-B NI-4).
+            !(!isRelative && isFrontendIsland(packageNameOfSpecifier(spec)))
+          ) {
             diags.push(unsupportedDiag("SC1013", locOf7(clause.namedBindings)));
           }
         }
