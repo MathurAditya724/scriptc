@@ -1,5 +1,7 @@
 /* writeHead stores the head: the first write(), end() or flushHeaders()
  * sends it, and an Expect header sends it at once (Node's _storeHeader).
+ * A cork()/uncork() pair with no write between keeps it stored; a write or
+ * flushHeaders() while corked sends it at the uncork.
  * The driver reads the raw wire and reports whether any bytes arrived
  * before the delayed body. */
 import { createServer } from "node:http";
@@ -24,6 +26,29 @@ const server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/plain" });
     setTimeout(() => {
       res.end("expected");
+    }, 300);
+  } else if (url === "/cork") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.cork();
+    res.uncork();
+    setTimeout(() => {
+      res.end("corked");
+    }, 300);
+  } else if (url === "/cork-flush") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.cork();
+    res.flushHeaders();
+    res.uncork();
+    setTimeout(() => {
+      res.end("corked flush");
+    }, 300);
+  } else if (url === "/cork-write") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.cork();
+    res.write("");
+    res.uncork();
+    setTimeout(() => {
+      res.end("corked write");
     }, 300);
   } else if (url === "/length") {
     res.writeHead(200, { "content-length": "5" });

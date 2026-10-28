@@ -985,6 +985,7 @@ struct ScrHttpRes {
   int corked;
   char *cork_buf;
   size_t cork_len, cork_cap;
+  bool cork_wrote; /* a write() ran while corked: the flush sends a held head */
   /* A write while corked commits the head (headersSent, Node's implicit
    * header) and holds its bytes here until the flush sends them first;
    * writeHead holds them here until the first write(), end() or
@@ -1812,6 +1813,7 @@ static void scr_http_cork_buffer(char **buf, size_t *held_len, size_t *held_cap,
 static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
   if (r->finished) return;
   if (r->corked > 0) {
+    r->cork_wrote = true;
     /* Node's write_() builds the implicit head even while corked */
     if (!r->head_sent && r->h2_stream == NULL) {
       ScrHttpBuf held = {NULL, 0, 0};
@@ -1893,6 +1895,10 @@ void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
 /* res.flushHeaders(): the head goes out NOW (streaming framing — chunked
  * unless the user fixed the length; the h2 lane's HEADERS frame). */
 void scr_http_res_flush_headers(ScrHttpRes *r) {
+  if (r->held_head_len > 0 && r->corked > 0 && !r->finished) {
+    r->cork_wrote = true; /* the uncork sends it, as Node's corked socket does */
+    return;
+  }
   if (r->held_head_len > 0 && r->corked == 0 && !r->finished) {
     ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
     r->held_head = NULL;
@@ -1952,7 +1958,11 @@ static void scr_http_queue_res_finish(ScrHttpRes *res);
 /* Flush corked bytes as one write (corked already zero, or forced by
  * end()). */
 static void scr_http_res_cork_flush(ScrHttpRes *r) {
-  if (r->cork_len == 0 && r->held_head_len == 0) return;
+  /* A head writeHead stored stays held until a write sends it: Node's
+   * uncork() with no write while corked sends nothing. */
+  bool wrote = r->cork_wrote;
+  r->cork_wrote = false;
+  if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) return;
   char *held = r->cork_buf;
   size_t held_len = r->cork_len;
   r->cork_buf = NULL;

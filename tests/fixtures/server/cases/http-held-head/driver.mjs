@@ -28,6 +28,9 @@ function probe(path, delayed) {
 await probe("/hold", true);
 await probe("/flush", true);
 await probe("/expect", true);
+await probe("/cork", true);
+await probe("/cork-flush", true);
+await probe("/cork-write", true);
 await probe("/length", false);
 await probe("/quit", false);
 console.log("driver done");
