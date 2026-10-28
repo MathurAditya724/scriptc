@@ -83,6 +83,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams settle their promises with dyn values.
   "webstream.class",
   "webstream.instanceOf",
+  "webstream.install",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
@@ -390,6 +391,7 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams answer async iteration through Symbol.asyncIterator.
   "webstream.class",
   "webstream.instanceOf",
+  "webstream.install",
   // EventEmitter's kShapeMode and kCapture properties
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
@@ -954,6 +956,7 @@ const RUNTIME_FEATURE_RULES = {
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
       "webstream.instanceOf",
+      "webstream.install",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -1076,6 +1079,7 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      "webstream.install",
       "util.styleText",
       "crypto.cipherNew",
       "webcrypto.encrypt",

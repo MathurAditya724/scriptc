@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
 import { skipUnownedTest } from "./shard.js";
+import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -24,7 +25,10 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 /* Sanitized builds of the published Effect pilots alone take 290 to 330 s on a 16-vCPU host, most of it in
  * the sanitized native link: near or past the suite's 300 s default. */
-const effectBuildTimeout = sanitize ? 900_000 : undefined;
+// The shape overlay (SCRIPTC_SHAPE_OVERLAY=1, validation runs) analyzes the
+// program and may lower it a second time without the overlay.
+const effectBuildTimeout =
+  sanitize || process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
 const testCosts = (
   JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
@@ -632,7 +636,10 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
-  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+  // The package builds its segmenter at module load, a run-time fence that
+  // surely fires, so the package runs in its Node island and segments as
+  // Node does.
+  test("a word segmenter a package builds at load runs in its Node island", async () => {
     const entry = join(pilotRoot, "word-segments-cli.ts");
     const { coverage } = analyze(entry, { npmStatic: "auto" });
     expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
@@ -645,12 +652,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       outDir,
       outPath: join(outDir, "program"),
     });
+    if (libnodePack() === null) {
+      expect(result.ok, "no libnode pack: the compile stops").toBe(false);
+      if (!result.ok) expect(result.diagnostics.map((d) => d.code)).toContain("SC8005");
+      return;
+    }
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const nativeRes = await runBinary(result.binaryPath, []);
-    expect(nativeRes.stdout.toString()).toMatch(
-      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
-    );
+    expect(nativeRes.stdout.toString()).toBe("two| |words\n");
     expect(nativeRes.exitCode).toBe(0);
   });
 

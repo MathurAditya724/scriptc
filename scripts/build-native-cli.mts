@@ -30,7 +30,9 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // of the profile. Optimized builds otherwise use the committed profile, or
 // the indexed profile that SCRIPTC_NATIVE_PROFILE_USE names (gzip-compressed
 // when the name ends in .gz, as refresh-cli-profile.mjs writes it); an empty
-// SCRIPTC_NATIVE_PROFILE_USE builds without one.
+// SCRIPTC_NATIVE_PROFILE_USE builds without one. The block counts beside a
+// profile (cli.blocks.gz beside cli.profdata.gz) annotate the functions
+// whose control flow changed since the profile was collected.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
 // Below this share of matching functions, the build warns that the profile
 // has lost most of its gain. A profile refreshed on the same commit, with
@@ -81,6 +83,14 @@ if (useProfile) {
     const compressed = profileUse;
     profileUse = join(seed, "cli.profdata");
     writeFileSync(profileUse, gunzipSync(readFileSync(compressed)));
+    // The compiler reads the block counts beside the profile it uses.
+    const blocks = join(seed, "cli.blocks");
+    const compressedBlocks = compressed.endsWith(".profdata.gz")
+      ? `${compressed.slice(0, -".profdata.gz".length)}.blocks.gz`
+      : `${compressed}.blocks.gz`;
+    rmSync(blocks, { force: true });
+    if (existsSync(compressedBlocks))
+      writeFileSync(blocks, gunzipSync(readFileSync(compressedBlocks)));
   }
 }
 const compiler = process.env["SCRIPTC_CC"] ?? target.defaultLinker;
@@ -175,6 +185,9 @@ if (match !== undefined) {
   const share = profiled === 0 ? 0 : match.annotated / profiled;
   console.log(
     `native compiler profile: ${match.annotated} of ${profiled} profiled functions match (${(100 * share).toFixed(1)}%); ${match.missing} functions have no profile` +
+      (match.recovered > 0
+        ? `; ${match.recovered} functions annotated from the profile's block counts`
+        : "") +
       (match.unknownPartitions > 0
         ? `; ${match.unknownPartitions} partitions reused without counts`
         : ""),

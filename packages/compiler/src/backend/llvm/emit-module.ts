@@ -115,24 +115,56 @@ export function workerMinFunctions(): number {
   return Number.isFinite(value) && value > 0 ? value : 2000;
 }
 
+/** A function's estimated emission cost beyond its IR nodes, in nodes:
+ * fitted to the worker emission times of a large program's ranges. */
+const FUNCTION_EMIT_COST = 22;
+
+/** Where each of about `count` contiguous ranges of `functions` starts,
+ * followed by the end: ranges of about equal estimated emission cost, a
+ * function's node count plus FUNCTION_EMIT_COST. No range is empty. */
+export function emitRangeStarts(
+  functions: readonly IrFunction[],
+  count: number,
+  nodeCount: (fn: IrFunction) => number | undefined,
+): number[] {
+  const costs = functions.map((fn) => (nodeCount(fn) ?? 0) + FUNCTION_EMIT_COST);
+  const total = costs.reduce((sum, cost) => sum + cost, 0);
+  const starts = [0];
+  let sum = 0;
+  for (let i = 0; i < functions.length - 1 && starts.length < count; i++) {
+    sum += costs[i]!;
+    if (sum >= (total * starts.length) / count) starts.push(i + 1);
+  }
+  starts.push(functions.length);
+  return starts;
+}
+
 /** The function bodies emitted on forked worker processes, `workers` at a
- * time: the function list splits into contiguous ranges, each emitted in
- * its own process, which inherits this emitter as it is at the fork and
- * records a journal (emit-journal.ts). Ranges merge in function order, so
- * the text is the serial text. A range whose worker fails is emitted here
- * when its turn comes. Null without fork primitives (Node, Windows, inside
- * a worker) or when the module is small. */
+ * time: the function list splits into contiguous ranges of about equal
+ * estimated cost (emitRangeStarts), each emitted in its own process, which
+ * inherits this emitter as it is at the fork and records a journal
+ * (emit-journal.ts). A new range starts whenever a worker ends, and ranges
+ * merge in function order, so the text is the serial text. A range whose
+ * worker fails is emitted here when its turn comes. Null without fork
+ * primitives (Node, Windows, inside a worker) or when the module is small. */
 function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] | null {
   const fork = emitter.targetOptions.forkPrimitives;
   const functions = emitter.mod.functions;
   if (fork === undefined || workers < 2) return null;
   if (functions.length < workerMinFunctions()) return null;
   // More ranges than workers: a range's merge overlaps the later ranges'
-  // emission, and a slow range holds back less.
-  const count = Math.min(functions.length, workers * 3);
-  const size = Math.ceil(functions.length / count);
+  // emission, and a slow range holds back less. Ranges of equal cost finish
+  // at about the same time.
+  const starts = emitRangeStarts(functions, Math.min(functions.length, workers * 3), (fn) =>
+    emitter.nodeIndex.nodeCount(fn),
+  );
+  const count = starts.length - 1;
+  const rangeFunctions = (range: number): readonly IrFunction[] =>
+    functions.slice(starts[range], starts[range + 1]);
   const dir = mkdtempSync(join(tmpdir(), "scriptc-emit-"));
   const pids: number[] = [];
+  // The workers not yet reaped, by pid, with their ranges.
+  const running = new Map<number, number>();
   const start = (range: number): void => {
     const pid = fork.fork();
     if (pid === 0) {
@@ -141,7 +173,7 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
         emitter.journal = new EmitJournal();
         emitter.debug?.record();
         const texts: string[] = [];
-        for (const fn of functions.slice(range * size, (range + 1) * size)) {
+        for (const fn of rangeFunctions(range)) {
           texts.push(emitter.emitFunction(fn));
           relieveHeapPressure();
         }
@@ -155,17 +187,37 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
       fork.exit(code);
     }
     pids.push(pid);
+    if (pid > 0) running.set(pid, range);
   };
   const fnDefs: string[] = [];
+  // Ended ranges by index, with what their workers wrote (null when a worker
+  // failed), waiting to merge in function order.
+  const ended = new Map<number, { result: ChunkResult; texts: string[] } | null>();
+  // Reaps a worker and starts the next range in its place. A worker's journal
+  // records requests, not table contents, so its range's text doesn't depend
+  // on what merged before it forked.
+  const reap = (pid: number, range: number): void => {
+    const status = pid > 0 ? fork.wait(pid) : -1;
+    running.delete(pid);
+    if (pids.length < count) start(pids.length);
+    ended.set(range, status === 0 ? readRange(dir, range) : null);
+  };
   try {
     for (let range = 0; range < Math.min(workers, count); range++) start(range);
     for (let range = 0; range < count; range++) {
-      const pid = pids[range]!;
-      const status = pid > 0 ? fork.wait(pid) : -1;
-      // The next worker starts from this emitter as merged so far, which
-      // the journal allows: it records requests, not table contents.
-      const merged = status === 0 ? readRange(dir, range) : null;
-      const slice = functions.slice(range * size, (range + 1) * size);
+      // Until this range's worker ends, reap whichever worker ends first, so
+      // that `workers` keep running while ranges merge in order. A child
+      // that isn't a worker (or no `exited`) waits for this range's worker.
+      while (!ended.has(range)) {
+        const pid = pids[range]!;
+        const first = pid > 0 && fork.exited !== undefined ? fork.exited() : pid;
+        const other = running.get(first);
+        if (first !== pid && other !== undefined) reap(first, other);
+        else reap(pid, range);
+      }
+      const merged = ended.get(range)!;
+      ended.delete(range);
+      const slice = rangeFunctions(range);
       if (merged !== null && merged.texts.length === slice.length) {
         const rename = emitter.mergeChunk(merged.result);
         slice.forEach((fn, index) => {
@@ -180,7 +232,6 @@ function emitFunctionsOnWorkers(emitter: LlEmitter, workers: number): string[] |
           fnDefs.push(def);
           relieveHeapPressure();
         }
-      if (pids.length < count) start(pids.length);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

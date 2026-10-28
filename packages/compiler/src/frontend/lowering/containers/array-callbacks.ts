@@ -3382,10 +3382,13 @@ export function lowerTuplePredicateCall(
  * of the receiver's length when it starts. ArraySpeciesCreate reads the
  * receiver's length before the species constructor runs, so a constructor
  * that appends to the receiver does not extend the loop
- * (lowerWithArraySpecies). Null when `name` is no such helper. */
+ * (lowerWithArraySpecies). Every helper that reads a length is one, the
+ * flatMap whose callback returns a union included, whether or not a
+ * pipeline can fuse it (arrHofInfo holds the fusable ones); forEach makes
+ * no array, so it stays out. Null when `name` is no such helper. */
 export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | null {
-  const info = lowerer.arrHofInfo.get(name);
-  if (!info || info.method === "forEach") return null;
+  if (!name.startsWith("%arr.")) return null;
+  if (lowerer.arrHofInfo.get(name)?.method === "forEach") return null;
   const bounded = `${name}.bounded`;
   if (lowerer.liftedFnNamed(bounded)) return bounded;
   const fn = lowerer.liftedFnNamed(name);

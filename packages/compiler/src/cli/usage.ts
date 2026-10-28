@@ -102,7 +102,8 @@ Options:
                      code is laid out, inlined and split by how the profiled
                      runs used it. Code the profile does not describe, or
                      describes from an older version of the program, is
-                     optimized as without one. build prints how the profile
+                     optimized as without one, unless a .blocks file beside
+                     the profile describes it. build prints how the profile
                      matched on stderr, and warns when more than 10% of the
                      functions it describes changed (release or speed;
                      --emit=exe only)

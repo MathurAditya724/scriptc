@@ -8,6 +8,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
+import { emitInlineArrayGet, inlineFieldTail } from "./inline-arrays.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -607,6 +608,25 @@ export function emitBorrowedArrayRead(
   slot: string,
 ): void {
   const B = host.B;
+  // An element of an inline array field, borrowed from the instance.
+  if (read.arr.kind === "fieldGet" && read.arr.type.kind === "array") {
+    const tail = inlineFieldTail(host, read.arr.className, read.arr.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(read.arr.obj, [read.index]);
+      const index = host.emitExpr(read.index);
+      const value = emitInlineArrayGet(
+        host,
+        obj.name,
+        read.arr.className,
+        tail,
+        index,
+        read.arr.type.elem,
+        false,
+      );
+      B.line(`store ptr ${value}, ptr ${slot}`);
+      return;
+    }
+  }
   const array = host.emitStableReceiver(read.arr, [read.index]);
   const loopIndex = host.emitIntegerLoopIndex(read.index);
   if (loopIndex !== null && host.provenDenseIndex(read.arr, read.index)) {

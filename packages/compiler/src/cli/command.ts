@@ -665,6 +665,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(nodeIslands !== undefined ? { nodeIslands } : {}),
       ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),

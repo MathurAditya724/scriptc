@@ -36,6 +36,10 @@ struct Symbol {
   // Local definitions are rewritten with hidden visibility.
   std::string PromotedHeader;
   std::vector<unsigned> Refs;
+  // The functions its body calls directly (sorted).
+  std::vector<unsigned> Calls;
+  // A variable defined with "constant", whose loads the optimizer can fold.
+  bool Constant = false;
   std::vector<unsigned> Metadata;
   // The source-module group the emitter wrote before this definition, or
   // empty.
@@ -74,6 +78,8 @@ uint32_t stableHash(StringRef Name) {
   return Hash;
 }
 
+constexpr unsigned MinGroupedPartitions = 32;
+
 // Places the functions whose root carries a source-module group by group: a
 // module's functions call each other most, so keeping them together leaves
 // fewer calls for the thin link to import across partitions. A group larger
@@ -83,11 +89,11 @@ uint32_t stableHash(StringRef Name) {
 // lighter of two partitions chosen by hashes of its key, after the functions
 // placed by name. The placement depends only on the module text and the
 // partition count. Modules with fewer than MinGroupedPartitions partitions
-// keep the placement by name: with few partitions per core, the balance of
-// the largest partitions decides the build time more than the imports.
+// keep the placement by name, which balanceRoots evens out: with few
+// partitions per core, the balance of the largest partitions decides the
+// build time more than the imports.
 void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
                  unsigned Count) {
-  constexpr unsigned MinGroupedPartitions = 32;
   if (Count < MinGroupedPartitions)
     return;
   auto Bytes = [](const Symbol &S) -> uint64_t {
@@ -151,6 +157,67 @@ void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
   for (unsigned I = 0; I < Symbols.size(); ++I)
     if (!Keys[I].empty())
       Symbols[I].Partition = Where[Keys[I]];
+}
+
+// In modules of fewer than MinGroupedPartitions partitions, which
+// placeGroups leaves placed by name, the functions of each root (a
+// function and the chain that follows it) move together to another partition
+// when their name's partition would hold more than 1.25 times the mean
+// function bytes: each root probes the next partitions in turn, keeping the
+// first with room, else its own. An edit then recompiles about a mean
+// partition, and the largest partition, which bounds a cold build, stays
+// near the mean unless one root is larger. Roots and their bytes, and so
+// placement, depend only on the module text.
+void balanceRoots(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
+                  ArrayRef<char> Live, unsigned Count) {
+  if (Count >= MinGroupedPartitions)
+    return;
+  DenseMap<unsigned, uint64_t> RootBytes;
+  uint64_t Total = 0;
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Kind == SymbolKind::Function && Live[I])
+      RootBytes[Roots[I]] += Symbols[I].Header.size() + Symbols[I].Body.size();
+  // Each root counts in whole 4 KiB units, so that an edit that grows a root
+  // by less than that leaves every comparison, and every other root's
+  // partition, unchanged.
+  constexpr uint64_t Unit = 4096;
+  for (auto &Entry : RootBytes) {
+    Entry.second = (Entry.second + Unit - 1) / Unit * Unit;
+    Total += Entry.second;
+  }
+  std::vector<unsigned> Order;
+  for (auto &Entry : RootBytes)
+    Order.push_back(Entry.first);
+  llvm::sort(Order, [&](unsigned A, unsigned B) {
+    return Symbols[A].Name < Symbols[B].Name;
+  });
+  uint64_t Cap = Total * 5 / 4 / Count;
+  std::vector<uint64_t> Load(Count, 0);
+  DenseMap<unsigned, unsigned> Placed;
+  // Roots of more than half the cap are placed first, in name order, so
+  // that small roots fill around them; the others follow in name order.
+  auto Place = [&](unsigned Root) {
+    uint64_t Bytes = RootBytes[Root];
+    unsigned Home = stableHash(Symbols[Root].Name) % Count, Chosen = Home;
+    for (unsigned K = 0; K < Count; ++K) {
+      unsigned P = (Home + K) % Count;
+      if (Load[P] + Bytes <= Cap) {
+        Chosen = P;
+        break;
+      }
+    }
+    Load[Chosen] += Bytes;
+    Placed[Root] = Chosen;
+  };
+  for (unsigned Root : Order)
+    if (RootBytes[Root] * 2 > Cap)
+      Place(Root);
+  for (unsigned Root : Order)
+    if (RootBytes[Root] * 2 <= Cap)
+      Place(Root);
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Kind == SymbolKind::Function && Live[I])
+      Symbols[I].Partition = Placed[Roots[I]];
 }
 
 bool startsWithLinkage(StringRef Rest) {
@@ -278,6 +345,7 @@ bool parseGlobal(StringRef Line, Symbol &S) {
     }
     if (Cursor.consume_front("constant ")) {
       Keyword = "constant";
+      S.Constant = true;
       break;
     }
     size_t Space = Cursor.find(' ');
@@ -325,10 +393,13 @@ bool parseGlobal(StringRef Line, Symbol &S) {
 }
 
 // Collects the symbols (sorted) and metadata nodes (in order of first
-// appearance) that Text references outside quoted strings.
+// appearance) that Text references outside quoted strings, and in Calls the
+// symbols it names as direct callees, which the emitter writes followed by
+// "(".
 void scanReferences(StringRef Text, const StringMap<unsigned> &Index,
                     std::vector<unsigned> &Refs,
-                    std::vector<unsigned> &Metadata) {
+                    std::vector<unsigned> &Metadata,
+                    std::vector<unsigned> *Calls = nullptr) {
   DenseSet<unsigned> Seen(Metadata.begin(), Metadata.end());
   bool Quoted = false;
   for (size_t I = 0; I < Text.size(); ++I) {
@@ -343,8 +414,12 @@ void scanReferences(StringRef Text, const StringMap<unsigned> &Index,
       size_t Length = nameLength(Text, I + 1);
       if (Length != 0) {
         auto It = Index.find(Text.substr(I + 1, Length));
-        if (It != Index.end())
+        if (It != Index.end()) {
           Refs.push_back(It->second);
+          if (Calls && I + 1 + Length < Text.size() &&
+              Text[I + 1 + Length] == '(')
+            Calls->push_back(It->second);
+        }
         I += Length;
       }
     } else if (C == '!' && I + 1 < Text.size() && isDigit(Text[I + 1])) {
@@ -359,6 +434,10 @@ void scanReferences(StringRef Text, const StringMap<unsigned> &Index,
   }
   llvm::sort(Refs);
   Refs.erase(std::unique(Refs.begin(), Refs.end()), Refs.end());
+  if (Calls) {
+    llvm::sort(*Calls);
+    Calls->erase(std::unique(Calls->begin(), Calls->end()), Calls->end());
+  }
 }
 
 // Appends Text with every unquoted metadata reference renumbered by Map.
@@ -392,8 +471,18 @@ void appendRenumbered(StringRef Text, const DenseMap<unsigned, unsigned> &Map,
 
 } // namespace
 
+bool dominatedPartitions(ArrayRef<uint64_t> FunctionBytes) {
+  uint64_t Total = 0, Largest = 0;
+  for (uint64_t Bytes : FunctionBytes) {
+    Total += Bytes;
+    Largest = std::max(Largest, Bytes);
+  }
+  return Largest * 3 > Total * 2;
+}
+
 std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
-                                                      unsigned Count) {
+                                                      unsigned Count,
+                                                      bool SkipDominated) {
   if (Count < 2)
     return std::nullopt;
   std::vector<StringRef> Header, Types, Attributes, NamedMetadata;
@@ -529,7 +618,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     scanReferences(S.Header, Index, S.Refs, S.Metadata);
     if (!S.Body.empty()) {
       std::vector<unsigned> Refs;
-      scanReferences(S.Body, Index, Refs, S.Metadata);
+      scanReferences(S.Body, Index, Refs, S.Metadata, &S.Calls);
       S.Refs.insert(S.Refs.end(), Refs.begin(), Refs.end());
       llvm::sort(S.Refs);
       S.Refs.erase(std::unique(S.Refs.begin(), S.Refs.end()), S.Refs.end());
@@ -584,15 +673,36 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
   // inlining candidate of it, or data only it uses; keep it with that
   // definition so its partition can inline it without importing, and so a
   // helper an edit adds lands in the partition of the code that uses it. A
-  // chain through a global continues to the function that uses the global.
+  // function that its referrer only takes the address of is not an inlining
+  // candidate: a closure body whose address its creator passes to the
+  // runtime, or a compiled regular expression's matcher that a mutable
+  // global points to, gives the referrer nothing to inline, and joining it
+  // would make every edit of the referrer optimize it again. Such a function
+  // is placed by its own name, unless its body is under AddressOnlyBytes (a
+  // trampoline or thread entry, which costs little to optimize again). A
+  // chain through a constant global, whose loads the optimizer can turn into
+  // direct calls, continues to the function that uses the global.
   // A function body larger than this is past LLVM's inline cost limit even
   // for the only call to a local function, so it is placed by its own name.
-  // A chain stops where it would leave a function's source-module group:
-  // module initializers, which only the entry point calls, keep their own
-  // partitions instead of all sharing the entry point's.
+  // A chain stops where it would leave a function's source-module group for
+  // a function outside every group. In a module of more than
+  // GroupedChainBytes of LLVM text, it also stops where it would join a
+  // function of another group: module initializers, which only the entry
+  // point calls, keep their own partitions instead of all sharing the entry
+  // point's. In a smaller module, a function that one function of another
+  // source file calls stays with it, so it can still be inlined there as in
+  // the whole module; when that gathers most of the program into one
+  // partition, the program is optimized whole (see emitPartitions).
   constexpr size_t MaxInlinedBodyBytes = 256 * 1024;
+  constexpr size_t GroupedChainBytes = 1024 * 1024;
+  constexpr size_t AddressOnlyBytes = 512;
+  bool GroupedChains = Text.size() > GroupedChainBytes;
   constexpr unsigned Shared = ~1u;
   std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
+  // Whether a definition may follow its first referrer: it is not a
+  // function, or the referrer calls it or is a constant global, or its body
+  // is under AddressOnlyBytes.
+  std::vector<char> MayFollow(Symbols.size(), 0);
   for (unsigned I = 0; I < Symbols.size(); ++I) {
     const Symbol &S = Symbols[I];
     if (S.Kind == SymbolKind::Declaration || !Live[I])
@@ -600,18 +710,29 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     for (unsigned Ref : S.Refs) {
       if (Ref == I)
         continue;
-      Referrer[Ref] = Referrer[Ref] == NoPartition ? I : Shared;
+      if (Referrer[Ref] == NoPartition) {
+        Referrer[Ref] = I;
+        MayFollow[Ref] =
+            Symbols[Ref].Kind != SymbolKind::Function ||
+            Symbols[Ref].Body.size() < AddressOnlyBytes ||
+            (S.Kind == SymbolKind::Function
+                 ? std::binary_search(S.Calls.begin(), S.Calls.end(), Ref)
+                 : S.Constant);
+      } else {
+        Referrer[Ref] = Shared;
+      }
     }
   }
   auto Follows = [&](unsigned Child, unsigned Parent) {
     const Symbol &S = Symbols[Child];
-    if (!S.Local || Parent == NoPartition || Parent == Shared ||
-        Symbols[Parent].Kind == SymbolKind::Declaration)
+    if (!S.Local || !MayFollow[Child] || Parent == NoPartition ||
+        Parent == Shared || Symbols[Parent].Kind == SymbolKind::Declaration)
       return false;
     if (S.Kind == SymbolKind::Function &&
         (S.Body.size() > MaxInlinedBodyBytes ||
          (Symbols[Parent].Kind == SymbolKind::Function && !S.Group.empty() &&
-          S.Group != Symbols[Parent].Group)))
+          S.Group != Symbols[Parent].Group &&
+          (GroupedChains || Symbols[Parent].Group.empty()))))
       return false;
     return true;
   };
@@ -637,6 +758,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Symbols[I].Partition = stableHash(Symbols[Root].Name) % Count;
   }
   placeGroups(Symbols, Roots, Count);
+  balanceRoots(Symbols, Roots, Live, Count);
   // A global follows the function its chain ends at, then the first
   // function that references it, then its own name.
   for (unsigned I = 0; I < Symbols.size(); ++I)
@@ -663,10 +785,41 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Result.PublicSymbols.insert(S.Name);
 
   Result.Sources.resize(Count);
+  Result.FunctionBytes.assign(Count, 0);
   std::vector<std::vector<unsigned>> Owned(Count);
   for (unsigned I = 0; I < Symbols.size(); ++I)
-    if (Symbols[I].Kind != SymbolKind::Declaration && Live[I])
+    if (Symbols[I].Kind != SymbolKind::Declaration && Live[I]) {
       Owned[Symbols[I].Partition].push_back(I);
+      if (Symbols[I].Kind == SymbolKind::Function)
+        Result.FunctionBytes[Symbols[I].Partition] +=
+            Symbols[I].Header.size() + Symbols[I].Body.size();
+    }
+  // The caller optimizes such a module whole, so its partitions' text is
+  // not needed.
+  if (SkipDominated && dominatedPartitions(Result.FunctionBytes)) {
+    Result.Sources.clear();
+    return Result;
+  }
+
+  // An internal definition stays internal, so its partition's optimizer can
+  // inline a function into its last caller and delete it as the whole module
+  // would. It is promoted to hidden visibility only when a definition of
+  // another partition or a metadata node names it.
+  std::vector<char> Exported(Symbols.size(), 0);
+  for (unsigned I : NamedSymbols)
+    Exported[I] = 1;
+  for (auto &Entry : Metadata)
+    for (unsigned I : Entry.second.Symbols)
+      Exported[I] = 1;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind == SymbolKind::Declaration || !Live[I])
+      continue;
+    for (unsigned Ref : S.Refs)
+      if (Symbols[Ref].Kind != SymbolKind::Declaration &&
+          Symbols[Ref].Partition != S.Partition)
+        Exported[Ref] = 1;
+  }
 
   auto Assemble = [&](unsigned P) {
     std::vector<char> Needed(Symbols.size(), 0);
@@ -731,7 +884,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
         const Symbol &S = Symbols[I];
         if (S.Kind != Kind)
           continue;
-        Line(S.Local ? StringRef(S.PromotedHeader) : S.Header);
+        Line(S.Local && Exported[I] ? StringRef(S.PromotedHeader) : S.Header);
         if (!S.Body.empty())
           Line(S.Body);
       }

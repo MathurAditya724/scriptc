@@ -27,16 +27,22 @@
  *   dynamic functions returns a jsval, so a number it returns is not boxed
  *   (static callers, function values, exports and class members keep the
  *   dyn ABI);
+ * - such a function also takes a jsval for each parameter whose callers
+ *   mostly pass operator results or static numbers, unless its own reads
+ *   of the parameter by dyn consumers box more often than its callers do;
  * - a dyn local becomes a jsval local when the boxing it saves on writes
  *   of operator results outweighs the boxing its reads by dyn consumers add
- *   (loop depth weights both).
+ *   (loop depth weights both);
+ * - a dyn module global becomes a jsval global by the same measure, summed
+ *   over every function, when only dynamic-tier functions reference it.
  *
  * The rewrite changes representation only: every js builtin implements its
  * dyn twin's JS semantics, including ToPrimitive order and error messages
  * (scr_js_value.c delegates every non-number case to the dyn operator).
- * Static functions are never touched (invariant I1). Parameters, captures
- * and containers still hold cells until the shaped object model and the
- * dynamic call ABI (stages S4 and S5) replace them.
+ * Static functions are never touched (invariant I1). Captures, containers
+ * and the parameters of functions reached other than by direct calls still
+ * hold cells until the shaped object model and the dynamic call ABI
+ * (stages S4 and S5) replace them.
  *
  * Async functions and generators are rewritten like other functions (their
  * suspensions keep jsvals like any pointer) but keep the dyn result ABI. */
@@ -104,31 +110,36 @@ export function jsvalEligible(fn: IrFunction): boolean {
 /** Rewrite every eligible dynamic-tier function of a module in place.
  * Returns the number of functions that now use jsval. */
 export function promoteJsvals(mod: IrModule): number {
-  const results = jsvalResults(mod);
+  const direct = directCallees(mod);
+  const results = new Set<string>();
+  for (const fn of mod.functions)
+    if (direct.has(fn.name) && fn.returnType.kind === "dyn") results.add(fn.name);
   const sites = new JsIcSites(mod);
   const storesJs = (e: IrExpr): boolean =>
     e.kind === "call" && sites.site(e.callee)?.kind === "set";
+  const params = jsvalParams(mod, direct, results, storesJs);
+  const globals = promotableGlobals(mod, results, params, storesJs);
   let count = 0;
   for (const fn of mod.functions)
-    if (jsvalEligible(fn) && promoteFunction(fn, results, storesJs)) count++;
+    if (jsvalEligible(fn) && promoteFunction(fn, results, params, storesJs, globals)) count++;
   for (const fn of mod.functions) if (results.has(fn.name)) fn.returnType = JSVAL;
+  for (const global of mod.globals ?? []) if (globals.has(global.id)) global.type = JSVAL;
   return count;
 }
 
-/** Dynamic-tier functions whose dyn result becomes a jsval result, so a
- * number they return is not boxed: eligible functions whose every
- * reference is a direct call from a dynamic-tier function (static callers
- * keep their exact code, I1). Function values, library exports, the entry
- * and class members (`%<class>.<member>`, which vtables and the runtime
- * reach by name) keep the dyn ABI. */
-function jsvalResults(mod: IrModule): Set<string> {
+/** Dynamic-tier functions whose ABI the pass may change, so a number they
+ * return or take is not boxed: eligible functions whose every reference is
+ * a direct call from a dynamic-tier function (static callers keep their
+ * exact code, I1). Function values, library exports, the entry and class
+ * members (`%<class>.<member>`, which vtables and the runtime reach by
+ * name) keep the dyn ABI. */
+function directCallees(mod: IrModule): Set<string> {
   const classPrefixes = (mod.classes ?? []).map((cls) => `%${cls.name}.`);
   const results = new Set<string>();
   for (const fn of mod.functions) {
     // An async function's callers receive a promise and a generator's a
     // generator object: only synchronous functions return their result.
     if (!jsvalEligible(fn) || fn.async !== undefined || fn.generator !== undefined) continue;
-    if (fn.returnType.kind !== "dyn") continue;
     if (fn.name.includes(".") && !fn.name.startsWith("%dyn.")) continue;
     if (classPrefixes.some((prefix) => fn.name.startsWith(prefix))) continue;
     results.add(fn.name);
@@ -151,6 +162,96 @@ function jsvalResults(mod: IrModule): Set<string> {
   return results;
 }
 
+/** The parameters of direct callees that take a jsval, by position. A dyn
+ * parameter of a direct callee other than a library helper (`%dyn.*`,
+ * whose calls the inline caches emit) is a candidate. Its credit is the
+ * share of its arguments, weighted by the callers' loop depth, that the
+ * callers compute as jsvals (operator results, jsval results and static
+ * numbers): the boxing a call saves. promotableLocals weighs it against
+ * the callee's reads of the parameter by dyn consumers. */
+function jsvalParams(
+  mod: IrModule,
+  direct: ReadonlySet<string>,
+  results: ReadonlySet<string>,
+  storesJs: (e: IrExpr) => boolean,
+): Map<string, boolean[]> {
+  const byName = new Map<string, IrFunction>();
+  const passed = new Map<string, { total: number[]; js: number[] }>();
+  for (const fn of mod.functions) {
+    byName.set(fn.name, fn);
+    if (!direct.has(fn.name) || fn.name.startsWith("%dyn.")) continue;
+    if (!fn.params.some((p) => p.type.kind === "dyn")) continue;
+    passed.set(fn.name, { total: fn.params.map(() => 0), js: fn.params.map(() => 0) });
+  }
+  const params = new Map<string, boolean[]>();
+  if (passed.size === 0) return params;
+  const jsArgument = (e: IrExpr): boolean =>
+    isProducerCall(e) || isImmediateSource(e) || (e.kind === "call" && results.has(e.callee));
+  for (const fn of mod.functions) {
+    if (fn.tier !== "dynamic") continue;
+    everyWeightedExpr(fn.body, (e, weight) => {
+      const counts = e.kind === "call" ? passed.get(e.callee) : undefined;
+      if (counts === undefined || e.kind !== "call") return;
+      e.args.forEach((arg, i) => {
+        if (i >= counts.total.length || arg.type.kind !== "dyn") return;
+        counts.total[i]! += weight;
+        if (jsArgument(arg)) counts.js[i]! += weight;
+      });
+    });
+  }
+  const producer = (e: IrExpr): boolean =>
+    isProducerCall(e) || (e.kind === "call" && results.has(e.callee));
+  for (const [name, counts] of passed) {
+    const fn = byName.get(name)!;
+    const credits = new Map<string, number>();
+    fn.params.forEach((p, i) => {
+      if (p.type.kind === "dyn" && counts.js[i]! > 0)
+        credits.set(p.localId, counts.js[i]! / counts.total[i]!);
+    });
+    if (credits.size === 0) continue;
+    const promoted = promotableLocals(fn, producer, results.has(name), storesJs, credits);
+    const js = fn.params.map((p) => credits.has(p.localId) && promoted.has(p.localId));
+    if (js.includes(true)) params.set(name, js);
+  }
+  return params;
+}
+
+/** Visit every expression of a body with its loop weight. */
+function everyWeightedExpr(body: IrStmt[], visit: (e: IrExpr, weight: number) => void): void {
+  const expr = (e: IrExpr, weight: number): void => {
+    visit(e, weight);
+    everyExprChild(
+      e,
+      (child) => {
+        expr(child, weight);
+        return true;
+      },
+      (child) => {
+        stmt(child, weight);
+        return true;
+      },
+    );
+  };
+  const stmt = (s: IrStmt, weight: number): void => {
+    const inner =
+      s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf"
+        ? Math.min(weight * LOOP_WEIGHT, MAX_WEIGHT)
+        : weight;
+    everyStmtChild(
+      s,
+      (child) => {
+        expr(child, inner);
+        return true;
+      },
+      (child) => {
+        stmt(child, inner);
+        return true;
+      },
+    );
+  };
+  for (const s of body) stmt(s, 1);
+}
+
 /* ── local promotion ─────────────────────────────────────────────────── */
 
 const LOOP_WEIGHT = 8;
@@ -165,23 +266,109 @@ interface LocalCost {
 }
 
 /** The dyn locals of a function that become jsval locals. `producer`
- * tells which dyn expressions the rewrite computes as jsvals. */
+ * tells which dyn expressions the rewrite computes as jsvals. Parameters
+ * are candidates only with a credit (jsvalParams); `jsParams` lists the
+ * arguments that calls pass as jsvals. */
 function promotableLocals(
   fn: IrFunction,
   producer: (e: IrExpr) => boolean,
   jsResult: boolean,
   storesJs: (e: IrExpr) => boolean,
+  credits: ReadonlyMap<string, number> = new Map(),
+  jsParams: ReadonlyMap<string, readonly boolean[]> = new Map(),
 ): Set<string> {
+  const candidates = localCandidates(fn, credits);
+  if (candidates.size === 0) return new Set();
+  const blocked = new Set<string>();
+  scanBindingCosts(fn, candidates, blocked, producer, jsResult, storesJs, jsParams);
+  const promoted = new Set<string>();
+  for (const [id, cost] of candidates)
+    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
+  return promoted;
+}
+
+/** The dyn locals of a function that may become jsval locals, parameters
+ * with their credit. */
+function localCandidates(
+  fn: IrFunction,
+  credits: ReadonlyMap<string, number>,
+): Map<string, LocalCost> {
   const candidates = new Map<string, LocalCost>();
   for (const local of fn.locals) {
     if (local.type.kind === "dyn" && local.boxed === undefined && local.tdz === undefined)
       candidates.set(local.id, { saved: 0, added: 0 });
   }
-  for (const p of fn.params) candidates.delete(p.localId);
+  for (const p of fn.params) {
+    const cost = candidates.get(p.localId);
+    const credit = credits.get(p.localId);
+    if (cost === undefined || credit === undefined) candidates.delete(p.localId);
+    else cost.saved += credit;
+  }
   for (const c of fn.captures ?? []) candidates.delete(c.localId);
   for (const c of fn.classCaptures ?? []) candidates.delete(c.localId);
+  return candidates;
+}
+
+/** The dyn module globals that become jsval globals: those that only
+ * dynamic-tier functions reference, by reads and plain writes, and whose
+ * saved boxing outweighs the added boxing summed over every function, the
+ * same measure as for locals. Libraries keep every global (the host reads
+ * exported bindings), and so do bindings with a temporal dead zone. */
+function promotableGlobals(
+  mod: IrModule,
+  results: ReadonlySet<string>,
+  jsParams: ReadonlyMap<string, readonly boolean[]>,
+  storesJs: (e: IrExpr) => boolean,
+): Set<string> {
+  const candidates = new Map<string, LocalCost>();
+  if (mod.lib !== undefined) return new Set();
+  for (const global of mod.globals ?? [])
+    if (global.type.kind === "dyn" && global.tdz === undefined && global.initFlag === undefined)
+      candidates.set(global.id, { saved: 0, added: 0 });
   if (candidates.size === 0) return new Set();
   const blocked = new Set<string>();
+  const producer = (e: IrExpr): boolean =>
+    isProducerCall(e) || (e.kind === "call" && results.has(e.callee));
+  for (const fn of mod.functions) {
+    if (!jsvalEligible(fn)) {
+      // A static function reads and writes the binding as a cell (I1).
+      everyStmtList(fn.body, {
+        expr: (e) => {
+          if (
+            (e.kind === "varRef" || e.kind === "assignExpr" || e.kind === "incDec") &&
+            candidates.has(e.localId)
+          )
+            blocked.add(e.localId);
+          return true;
+        },
+        stmt: (st) => {
+          if ((st.kind === "assign" || st.kind === "forOf") && candidates.has(st.localId))
+            blocked.add(st.localId);
+          return true;
+        },
+      });
+      continue;
+    }
+    scanBindingCosts(fn, candidates, blocked, producer, results.has(fn.name), storesJs, jsParams);
+  }
+  const promoted = new Set<string>();
+  for (const [id, cost] of candidates)
+    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
+  return promoted;
+}
+
+/** Adds to `candidates` the boxing a jsval binding saves and adds in `fn`,
+ * and to `blocked` the candidates `fn` references other than by reads and
+ * plain writes. */
+function scanBindingCosts(
+  fn: IrFunction,
+  candidates: ReadonlyMap<string, LocalCost>,
+  blocked: Set<string>,
+  producer: (e: IrExpr) => boolean,
+  jsResult: boolean,
+  storesJs: (e: IrExpr) => boolean,
+  jsParams: ReadonlyMap<string, readonly boolean[]>,
+): void {
   const write = (id: string, value: IrExpr | null, weight: number): void => {
     const cost = candidates.get(id);
     if (cost === undefined) return;
@@ -224,14 +411,20 @@ function promotableLocals(
           return;
         }
         break;
-      case "call":
+      case "call": {
         // An inline-cache store takes its value as a jsval (S4).
         if (storesJs(e)) {
           expr(e.args[0]!, false, weight);
           expr(e.args[1]!, true, weight);
           return;
         }
+        const js = jsParams.get(e.callee);
+        if (js !== undefined) {
+          e.args.forEach((arg, i) => expr(arg, js[i] === true, weight));
+          return;
+        }
         break;
+      }
       default:
         break;
     }
@@ -319,10 +512,6 @@ function promotableLocals(
     }
   };
   for (const s of fn.body) stmt(s, 1);
-  const promoted = new Set<string>();
-  for (const [id, cost] of candidates)
-    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
-  return promoted;
 }
 
 /** A statement-level sequence whose result nothing reads. */
@@ -335,7 +524,9 @@ function discardedSequence(e: IrExpr): e is Extract<IrExpr, { kind: "seqExpr" }>
 function promoteFunction(
   fn: IrFunction,
   results: ReadonlySet<string>,
+  params: ReadonlyMap<string, readonly boolean[]>,
   storesJs: (e: IrExpr) => boolean,
+  globals: ReadonlySet<string>,
 ): boolean {
   const resultCall = (e: IrExpr): boolean => e.kind === "call" && results.has(e.callee);
   const operatorCall = (e: IrExpr): boolean => isProducerCall(e);
@@ -344,9 +535,16 @@ function promoteFunction(
     (e) => operatorCall(e) || resultCall(e),
     results.has(fn.name),
     storesJs,
+    new Map(),
+    params,
   );
+  for (const id of globals) promoted.add(id);
+  const ownParams = params.get(fn.name);
+  fn.params.forEach((p, i) => {
+    if (ownParams?.[i] === true) promoted.add(p.localId);
+  });
   const ownResult = results.has(fn.name);
-  let changed = false;
+  let changed = ownParams !== undefined;
   const producesJs = (e: IrExpr): boolean =>
     operatorCall(e) ||
     resultCall(e) ||
@@ -358,11 +556,15 @@ function promoteFunction(
     type,
     loc: e.loc,
   });
+  /** A call's arguments, as jsvals where the callee takes them so. */
+  const callArgs = (e: Extract<IrExpr, { kind: "call" }>): IrExpr[] => {
+    const js = params.get(e.callee);
+    return e.args.map((arg, i) => (js?.[i] === true ? toJs(arg) : rewrite(arg)));
+  };
   /** A dyn-typed expression as a jsval. */
   const toJs = (e: IrExpr): IrExpr => {
     changed = true;
-    if (e.kind === "call" && results.has(e.callee))
-      return { ...e, args: e.args.map(rewrite), type: JSVAL };
+    if (e.kind === "call" && results.has(e.callee)) return { ...e, args: callArgs(e), type: JSVAL };
     if (e.kind === "libCall" && Object.hasOwn(PRODUCERS, e.fn)) {
       return libCall(
         PRODUCERS[e.fn]!,
@@ -400,6 +602,10 @@ function promoteFunction(
     if (e.kind === "toBool" && e.operand.type.kind === "dyn" && producesJs(e.operand))
       return { ...e, operand: toJs(e.operand) };
     if (e.type.kind === "dyn" && producesJs(e)) return libCall("js.toDyn", [toJs(e)], e, DYN);
+    if (e.kind === "call" && params.has(e.callee)) {
+      changed = true;
+      return { ...e, args: callArgs(e) };
+    }
     return mapExprChildren(e, rewrite, rewriteStmt);
   };
   const rewriteStmt = (s: IrStmt): IrStmt => {
@@ -422,5 +628,6 @@ function promoteFunction(
   if (!changed) return false;
   fn.body = body;
   for (const local of fn.locals) if (promoted.has(local.id)) local.type = JSVAL;
+  for (const p of fn.params) if (promoted.has(p.localId)) p.type = JSVAL;
   return true;
 }

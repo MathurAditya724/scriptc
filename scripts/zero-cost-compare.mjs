@@ -415,7 +415,9 @@ export function nodeIslandSymbols(names) {
  * whose parameters the lib types `any`: captures a match can leave unset
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
- * views. Every other bench workload is fully typed and must link none. The gate and
+ * views. bench/layered-errors, also added later, constructs and throws
+ * Error subclass instances, as bench/validate-errors does. Every other bench
+ * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -440,6 +442,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/throw-chains",
   "bench/regex-replacers",
   "bench/record-untyped-writes",
+  "bench/layered-errors",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
