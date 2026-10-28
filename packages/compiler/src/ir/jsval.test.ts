@@ -277,3 +277,70 @@ test("static functions keep their dyn values; async functions keep their dyn res
   expect(jsCalls(asyncChain.body)).toEqual(["js.toDyn", "js.add", "js.fromDyn", "js.fromF64"]);
   expect(validateModule(mod)).toEqual([]);
 });
+
+const call = (callee: string, ...args: IrExpr[]): IrExpr => ({
+  kind: "call",
+  callee,
+  args,
+  type: DYN,
+  loc,
+});
+
+test("a parameter that callers pass numbers and operator results takes a jsval", () => {
+  // scale(o) { return o * 2 }
+  const scale = fn("scale", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "*"), loc },
+  ]);
+  // return scale(1.5) + scale(o.n + 1)
+  const caller = fn("caller", [
+    {
+      kind: "return",
+      value: op(
+        "dyn.add",
+        call("scale", num(1.5)),
+        call("scale", op("dyn.add", keyGet(ref("o"), "n"), num(1))),
+      ),
+      loc,
+    },
+  ]);
+  const mod = moduleOf(scale, caller);
+  promoteJsvals(mod);
+  expect(scale.params[0]!.type).toEqual(JSVAL);
+  expect(scale.locals.find((l) => l.id === "o")!.type).toEqual(JSVAL);
+  // The parameter is the operand itself: no conversion in the callee.
+  expect(jsCalls(scale.body)).toEqual(["js.arithmetic", "js.fromF64"]);
+  // The callers pass an immediate and an operator result: no box.
+  expect(jsCalls(caller.body)).not.toContain("js.toDyn");
+  expect(jsCalls(caller.body).filter((f) => f === "js.fromF64")).toHaveLength(2);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a parameter read by dyn consumers or passed cells keeps the dyn ABI", () => {
+  // keyed(o) { return o.x }: the read needs a cell, so a jsval would box.
+  const keyed = fn("keyed", [{ kind: "return", value: keyGet(ref("o"), "x"), loc }]);
+  // half(o) { return o / 2 }, called with property reads only.
+  const half = fn("half", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "/"), loc },
+  ]);
+  // twice(o) { return o * 2 }, also called by a static function.
+  const twice = fn("twice", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "*"), loc },
+  ]);
+  const caller = fn("caller", [
+    { kind: "exprStmt", expr: call("keyed", num(1)), loc },
+    { kind: "exprStmt", expr: call("half", keyGet(ref("o"), "n")), loc },
+    { kind: "return", value: op("dyn.add", call("twice", num(3)), num(1)), loc },
+  ]);
+  const staticCaller = fn("staticCaller", [
+    { kind: "exprStmt", expr: call("twice", ref("o")), loc },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+  const mod = moduleOf(keyed, half, twice, caller, staticCaller);
+  expect(staticCaller.tier).toBeUndefined();
+  promoteJsvals(mod);
+  expect(keyed.params[0]!.type).toEqual(DYN);
+  expect(half.params[0]!.type).toEqual(DYN);
+  expect(twice.params[0]!.type).toEqual(DYN);
+  expect(twice.returnType).toEqual(DYN);
+  expect(validateModule(mod)).toEqual([]);
+});
