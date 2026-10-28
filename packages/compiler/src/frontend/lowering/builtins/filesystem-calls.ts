@@ -1165,10 +1165,16 @@ export function lowerFsWriteOptionsCall(
   return finishWrite(optionValues);
 }
 
+/** ts.CheckFlags.Readonly — the property symbol's readonly bit, the same
+ * test decl-projection.ts makes for a projected declaration. */
+const READONLY_CHECK_FLAG = 8;
+
 /** The object literal behind a write options argument: the literal
  * itself, or the initializer of the const binding that holds it (through
  * type casts and parentheses). A const's values must all be literals —
- * inlining anything else would re-evaluate it at the write site. */
+ * inlining anything else would re-evaluate it at the write site — and the
+ * binding's record must be readonly, so the inlined values are also what
+ * a later read of the record would answer. */
 function optionsLiteralOf(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -1182,6 +1188,16 @@ function optionsLiteralOf(
   if (init === null) return null;
   const value = unwrap(init);
   if (!ts.isObjectLiteralExpression(value)) return null;
+  // The literal values are inlined at the WRITE SITE. That is the same
+  // evaluation Node performs — it reads the options record when the call
+  // runs — only while the record cannot change after its initializer: a
+  // mutable one (`const OPTS: { mode: number } = { mode: 0o600 }`) would
+  // let `OPTS.mode = 0o644` reach Node's write and not this one. Only a
+  // readonly record (`as const`, `Readonly<...>`) admits the inline; the
+  // rest keep the SC2020 fence.
+  const props = lowerer.checker.getPropertiesOfType(lowerer.typeOf(bare));
+  if (props.length === 0 || !props.every((p) => (p.checkFlags & READONLY_CHECK_FLAG) !== 0))
+    return null;
   const literalValue = (expr: ts.Expression): boolean => {
     const v = unwrap(expr);
     if (ts.isStringLiteral(v) || ts.isNoSubstitutionTemplateLiteral(v)) return true;

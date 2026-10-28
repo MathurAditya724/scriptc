@@ -385,6 +385,14 @@ export function lowerProcessStreamProperty(
       ["stdout", "stderr"].includes(lowerer.stdlibGlobalMember(recv, "process") ?? "")
     )
   ) {
+    // A FIRST-CLASS ALIAS of the stream (`const out = process.stdout;
+    // out.writableLength`) answers the same constant the direct read
+    // does: the compiled binary's fd 1/2 writes are synchronous, so
+    // nothing is ever queued and Node's number is always 0. The other
+    // members stay keyed reads — the runtime stream answers their live
+    // values (isatty columns/rows, stdin readableLength).
+    if (member === "writableLength")
+      return { kind: "numLit", value: 0, type: F64, loc: locOf(expr) };
     const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
     return lowerer.coerceToExpected(
       {

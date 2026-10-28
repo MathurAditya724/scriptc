@@ -45,6 +45,27 @@ clean.on("exit", (code, signal) => {
       failed.off("close", removedClose);
       failed.off("close", removedClose);
       console.log("done");
+
+      // Node's emit COPIES the listener array before it delivers the
+      // event, so a listener that removes a SIBLING must not cut the emit
+      // in flight short: the removed listener still runs for this event.
+      const exiting = spawn("sh", ["-c", "exit 9"], { stdio: "ignore" });
+      const inFlightExit = (code: number | null, signal: string | null): void => {
+        console.log("in-flight exit:", code, signal);
+      };
+      exiting.on("exit", (code, signal) => {
+        exiting.off("exit", inFlightExit);
+        console.log("remover exit:", code, signal);
+      });
+      exiting.on("exit", inFlightExit);
+      const inFlightClose = (code: number | null, signal: string | null): void => {
+        console.log("in-flight close:", code, signal);
+      };
+      exiting.on("close", (code, signal) => {
+        exiting.off("close", inFlightClose);
+        console.log("remover close:", code, signal);
+      });
+      exiting.on("close", inFlightClose);
     });
   });
 });

@@ -61,15 +61,6 @@ fenced.ts:39:1 - error SC2020: 'events.on' is typed by @types/node but has no sc
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:40:13 - error SC2020: 'PlatformPath.sep' is typed by @types/node but has no scriptc lowering yet
-
-  39 | on(new EventEmitter(), "tick");
-  40 | console.log(win32.sep);
-     |             ^~~~~~~~~
-  41 | /* URL getters and serialization lower under @types/node, but object-URL
-
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 fenced.ts:46:13 - error SC2020: 'URL.createObjectURL' is typed by @types/node but has no scriptc lowering yet
 
   45 | const u = new URL("https://example.com/x?a=1");

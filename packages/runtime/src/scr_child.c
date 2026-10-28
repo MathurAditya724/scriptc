@@ -2721,6 +2721,38 @@ static bool scr_child_close_ready(const ScrChild *c) {
          scr_ipc_close_ready(c->ipc);
 }
 
+/* Node's EventEmitter copies the listener array before it emits, so a
+ * listener that calls `off`/`removeListener` on a sibling must not shift
+ * the entries this event is still delivering (the removed listener still
+ * runs for the event in flight; one added during the emit does not).
+ * Detach the registry here and answer its owned entries; the caller
+ * invokes and releases each one, then frees the array. A registration
+ * made during the emit is already refused by the close_done/settled
+ * guard in scr_child_on_*. */
+static ScrChildExitEntry *scr_child_detach_exit(ScrChild *c, size_t *count) {
+  ScrChildExitEntry *entries = c->exit_cbs;
+  *count = entries != NULL ? c->n_exit : 0;
+  c->exit_cbs = NULL;
+  c->n_exit = c->cap_exit = 0;
+  return entries;
+}
+
+static ScrChildExitEntry *scr_child_detach_close(ScrChild *c, size_t *count) {
+  ScrChildExitEntry *entries = c->close_cbs;
+  *count = entries != NULL ? c->n_close : 0;
+  c->close_cbs = NULL;
+  c->n_close = c->cap_close = 0;
+  return entries;
+}
+
+static ScrChildErrEntry *scr_child_detach_err(ScrChild *c, size_t *count) {
+  ScrChildErrEntry *entries = c->err_cbs;
+  *count = entries != NULL ? c->n_err : 0;
+  c->err_cbs = NULL;
+  c->n_err = c->cap_err = 0;
+  return entries;
+}
+
 static void scr_child_fire_close_in(ScrChild *c);
 
 /* 'close' runs in the spawn() call's context. */
@@ -2739,11 +2771,14 @@ static void scr_child_fire_close_in(ScrChild *c) {
   /* Node counts the channel toward 'close' only through its EOF read; a
    * channel disconnected from this side never reports one, so 'close'
    * never fires. */
-  size_t n = scr_ipc_close_dropped(c->ipc) ? 0 : c->n_close;
+  size_t n = 0;
+  ScrChildExitEntry *callbacks = NULL;
+  if (!scr_ipc_close_dropped(c->ipc)) callbacks = scr_child_detach_close(c, &n);
   for (size_t i = 0; i < n; i++) {
-    c->close_cbs[i].fn(c->close_cbs[i].cb, has_code, code, c->exit_signal);
-    if (scr_exc_pending()) break;
+    if (!scr_exc_pending()) callbacks[i].fn(callbacks[i].cb, has_code, code, c->exit_signal);
+    scr_closure_release(callbacks[i].cb);
   }
+  free(callbacks);
   scr_child_drop_close_listeners(c);
   scr_child_release(c); /* the closing/settle registry's reference */
 }
@@ -2831,17 +2866,24 @@ static void scr_child_settle_in(ScrChild *c) {
       _Exit(1);
     }
     scr_child_err_code = c->spawn_errname;
-    for (size_t i = 0; i < c->n_err; i++) {
-      c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
-      if (scr_exc_pending()) break; /* the loop surfaces it */
+    size_t n_err = 0;
+    ScrChildErrEntry *err_cbs = scr_child_detach_err(c, &n_err);
+    for (size_t i = 0; i < n_err; i++) {
+      if (!scr_exc_pending()) err_cbs[i].fn(err_cbs[i].cb, c->err_msg);
+      scr_closure_release(err_cbs[i].cb);
     }
+    free(err_cbs);
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   } else {
-    for (size_t i = 0; i < c->n_exit; i++) {
-      c->exit_cbs[i].fn(c->exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
-      if (scr_exc_pending()) break;
+    size_t n_exit = 0;
+    ScrChildExitEntry *exit_cbs = scr_child_detach_exit(c, &n_exit);
+    for (size_t i = 0; i < n_exit; i++) {
+      if (!scr_exc_pending())
+        exit_cbs[i].fn(exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
+      scr_closure_release(exit_cbs[i].cb);
     }
+    free(exit_cbs);
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   }
   scr_child_drop_terminal_listeners(c);
@@ -5596,6 +5638,38 @@ static bool scr_child_close_ready(const ScrChild *c) {
          scr_ipc_close_ready(c->ipc);
 }
 
+/* Node's EventEmitter copies the listener array before it emits, so a
+ * listener that calls `off`/`removeListener` on a sibling must not shift
+ * the entries this event is still delivering (the removed listener still
+ * runs for the event in flight; one added during the emit does not).
+ * Detach the registry here and answer its owned entries; the caller
+ * invokes and releases each one, then frees the array. A registration
+ * made during the emit is already refused by the close_done/settled
+ * guard in scr_child_on_*. */
+static ScrChildExitEntry *scr_child_detach_exit(ScrChild *c, size_t *count) {
+  ScrChildExitEntry *entries = c->exit_cbs;
+  *count = entries != NULL ? c->n_exit : 0;
+  c->exit_cbs = NULL;
+  c->n_exit = c->cap_exit = 0;
+  return entries;
+}
+
+static ScrChildExitEntry *scr_child_detach_close(ScrChild *c, size_t *count) {
+  ScrChildExitEntry *entries = c->close_cbs;
+  *count = entries != NULL ? c->n_close : 0;
+  c->close_cbs = NULL;
+  c->n_close = c->cap_close = 0;
+  return entries;
+}
+
+static ScrChildErrEntry *scr_child_detach_err(ScrChild *c, size_t *count) {
+  ScrChildErrEntry *entries = c->err_cbs;
+  *count = entries != NULL ? c->n_err : 0;
+  c->err_cbs = NULL;
+  c->n_err = c->cap_err = 0;
+  return entries;
+}
+
 static void scr_child_fire_close_in(ScrChild *c);
 
 /* 'close' runs in the spawn() call's context. */
@@ -5614,11 +5688,14 @@ static void scr_child_fire_close_in(ScrChild *c) {
   /* Node counts the channel toward 'close' only through its EOF read; a
    * channel disconnected from this side never reports one, so 'close'
    * never fires. */
-  size_t n = scr_ipc_close_dropped(c->ipc) ? 0 : c->n_close;
+  size_t n = 0;
+  ScrChildExitEntry *callbacks = NULL;
+  if (!scr_ipc_close_dropped(c->ipc)) callbacks = scr_child_detach_close(c, &n);
   for (size_t i = 0; i < n; i++) {
-    c->close_cbs[i].fn(c->close_cbs[i].cb, has_code, code, c->exit_signal);
-    if (scr_exc_pending()) break;
+    if (!scr_exc_pending()) callbacks[i].fn(callbacks[i].cb, has_code, code, c->exit_signal);
+    scr_closure_release(callbacks[i].cb);
   }
+  free(callbacks);
   scr_child_drop_close_listeners(c);
   scr_child_release(c); /* the closing/settle registry's reference */
 }
@@ -5698,17 +5775,24 @@ static void scr_child_settle_in(ScrChild *c) {
     /* Node's spawn-failure error is an errnoException: `code` carries the
      * errno name. The thunk reads this while the pass runs. */
     scr_child_err_code = scr_errname(c->spawn_errno);
-    for (size_t i = 0; i < c->n_err; i++) {
-      c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
-      if (scr_exc_pending()) break; /* the loop surfaces it */
+    size_t n_err = 0;
+    ScrChildErrEntry *err_cbs = scr_child_detach_err(c, &n_err);
+    for (size_t i = 0; i < n_err; i++) {
+      if (!scr_exc_pending()) err_cbs[i].fn(err_cbs[i].cb, c->err_msg);
+      scr_closure_release(err_cbs[i].cb);
     }
+    free(err_cbs);
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   } else {
-    for (size_t i = 0; i < c->n_exit; i++) {
-      c->exit_cbs[i].fn(c->exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
-      if (scr_exc_pending()) break;
+    size_t n_exit = 0;
+    ScrChildExitEntry *exit_cbs = scr_child_detach_exit(c, &n_exit);
+    for (size_t i = 0; i < n_exit; i++) {
+      if (!scr_exc_pending())
+        exit_cbs[i].fn(exit_cbs[i].cb, c->has_code, c->code, c->exit_signal);
+      scr_closure_release(exit_cbs[i].cb);
     }
+    free(exit_cbs);
     if (!scr_exc_pending()) scr_exec_file_fire(c);
   }
   scr_child_drop_terminal_listeners(c);

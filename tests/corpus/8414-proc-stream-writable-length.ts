@@ -7,3 +7,10 @@ const outLength = process.stdout.writableLength;
 const errLength = process.stderr.writableLength;
 console.log("writableLength:", outLength, errLength);
 console.log("typeof:", typeof outLength, typeof errLength);
+
+// The same read through a first-class ALIAS of the stream answers the
+// same constant: the alias keeps the stream's type, so the read lowers
+// to the synchronous-write 0 instead of a keyed runtime get.
+const out = process.stdout;
+const aliased = out.writableLength;
+console.log("alias:", aliased, typeof aliased);
