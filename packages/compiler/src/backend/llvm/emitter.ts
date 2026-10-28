@@ -371,11 +371,14 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
+  isPayloadTag,
   NULLABLE_ABSENT,
   NULLABLE_NULL,
   NullableUnions,
+  pointerTagFn,
   type NullableUnion,
 } from "./nullable-unions.js";
+import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
@@ -2052,6 +2055,7 @@ export class LlEmitter {
       mod,
       options.debugSources === undefined,
       this.nodeIndex,
+      options.pointerBits !== 32,
     );
     this.heapCensus = heapCensusOf(mod, this.nullableUnions);
     for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
@@ -2316,6 +2320,13 @@ export class LlEmitter {
         }
       }
     }
+    // The same holds for a class union's arms (class-unions.ts).
+    classUnionHeaders(
+      mod,
+      this.nullableUnions.allClassUnions(),
+      this.tracedShapes,
+      this.tracedUnions,
+    );
     this.shapeHost = {
       // Journal hooks only on emitters that can emit ranges (chunk
       // emitters, and emitters whose workers take a journal after the
@@ -2505,7 +2516,12 @@ export class LlEmitter {
     // The class graph: base/children links, hierarchy membership, the
     // whole-program preorder numbering for instanceof over runtime and
     // compiled error objects, and the per-hierarchy virtual slot lists.
-    this.classMeta = buildClassGraph(mod, this.fnByName, this.sizeType);
+    this.classMeta = buildClassGraph(
+      mod,
+      this.fnByName,
+      this.sizeType,
+      this.nullableUnions.taggedClasses(),
+    );
     if (mod.lifetimeRegions === true) {
       this.regions = new LifetimeRegions(
         this.shapeHost,
@@ -2773,6 +2789,7 @@ export class LlEmitter {
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
       ...emitShapeUnionHelpers(this.shapeHost),
+      ...emitClassUnionHelpers(this.shapeHost, this.classMeta),
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -4719,11 +4736,7 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(unionId);
     if (nullable) {
       // The owned payload IS the nullable union's value.
-      if (
-        nullable.repr === "single"
-          ? tag !== nullable.refTag
-          : !nullable.arms.some((arm) => arm.tag === tag)
-      )
+      if (!isPayloadTag(nullable, tag))
         throw new InternalCompilerError(
           `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
         );
@@ -7208,7 +7221,10 @@ export class LlEmitter {
         const nullable = this.nullableUnions.of(t);
         return nullable?.repr === "single" ? nullable.arm : null;
       },
-      shapeUnion: (t) => this.nullableUnions.of(t)?.repr === "shapes",
+      pointerTagFn: (t) => {
+        const nullable = this.nullableUnions.of(t);
+        return nullable === null || nullable.repr === "single" ? null : pointerTagFn(nullable);
+      },
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
@@ -7716,11 +7732,7 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
-    const refArm =
-      nullable.repr === "single"
-        ? e.tag === nullable.refTag
-        : nullable.arms.some((arm) => arm.tag === e.tag);
-    return refArm && isRefCounted(e.value.type) ? "ref" : null;
+    return isPayloadTag(nullable, e.tag) && isRefCounted(e.value.type) ? "ref" : null;
   }
 
   materializeSplitLocal(localId: string): void {
