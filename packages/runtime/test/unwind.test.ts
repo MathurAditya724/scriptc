@@ -18,7 +18,7 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
     // .eh_frame_hdr.
     const library = join(buildDir, "libtest_unwind_frames.so");
     await execFileAsync("clang", ["-O1", "-shared", "-fPIC", "-o", library, ...frames]);
-    for (const build of ["plain", "asan", "shared"] as const) {
+    for (const build of ["plain", "asan", "tsan", "shared"] as const) {
       const bin = join(buildDir, `test_unwind_${build}`);
       await execFileAsync("clang", [
         "-std=c11",
@@ -28,6 +28,7 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
         "-D_GNU_SOURCE",
         "-DSCR_UNWIND_TESTING",
         ...(build === "asan" ? ["-fsanitize=address"] : []),
+        ...(build === "tsan" ? ["-fsanitize=thread"] : []),
         "-pthread",
         "-o",
         bin,
@@ -37,8 +38,14 @@ test.runIf(process.platform === "linux" && process.arch === "x64")(
         // The library's landing pads and the program share libgcc_s's unwinder.
         ...(build === "shared" ? ["-shared-libgcc"] : ["-lgcc_eh"]),
       ]);
-      const env = { ...process.env, ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1" };
-      for (const args of [[], ["threads"]]) {
+      const env = {
+        ...process.env,
+        ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1",
+        TSAN_OPTIONS: "halt_on_error=1",
+      };
+      // ThreadSanitizer checks the threads' concurrent plan inserts and
+      // lookups; the libgcc fallback cases run in the other builds.
+      for (const args of build === "tsan" ? [["threads"]] : [[], ["threads"]]) {
         const run = await execFileAsync(bin, args, { env });
         expect(run.stdout).toBe("unwind checks passed\n");
       }

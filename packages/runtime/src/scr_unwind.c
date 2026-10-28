@@ -566,8 +566,10 @@ static __attribute__((noinline)) const ScrUnwindPlan *scr_unwind_insert(uint64_t
     scr_unwind_plan_count++;
     ScrUnwindPlan built;
     scr_unwind_build(&built, ra);
-    built.pc = 0;
-    *slot = built;
+    /* Lookups read pc atomically, so the plan's other fields are written
+     * first and pc only by the release store that publishes them. */
+    memcpy((char *)slot + sizeof slot->pc, (const char *)&built + sizeof built.pc,
+           sizeof *slot - sizeof slot->pc);
     __atomic_store_n(&slot->pc, ra, __ATOMIC_RELEASE);
     result = slot;
   }
