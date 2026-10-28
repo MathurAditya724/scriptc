@@ -391,6 +391,9 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   dst->identity->rc++;
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
 const void *scr_promise_identity_key(ScrPromise *p) {
   if (!p->identity) {
     p->identity = malloc(sizeof *p->identity);
@@ -406,6 +409,7 @@ void scr_promise_identity_drop(const void *key) {
   ScrPromiseIdentity *identity = (ScrPromiseIdentity *)key;
   if (--identity->rc == 0) free(identity);
 }
+#endif
 
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
   return a == b || (a->identity != NULL && a->identity == b->identity);
