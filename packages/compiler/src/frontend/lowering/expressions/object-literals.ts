@@ -234,6 +234,7 @@ export function lowerDynObjectLiteral(
   lowerer: Lowerer,
   expr: ts.ObjectLiteralExpression,
   boxValue?: (node: ts.Expression, value: IrExpr) => IrExpr,
+  conditionalArms = false,
 ): IrExpr {
   const loc = locOf(expr);
   let fields: { key: IrExpr; value: IrExpr }[] = [];
@@ -308,6 +309,7 @@ export function lowerDynObjectLiteral(
         builtin === "path" || builtin === "path/posix" || builtin === "path/win32"
           ? pathModuleValue(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
           : !boxValue &&
+              conditionalArms &&
               (conditionalSpreadOf(prop.expression) !== null ||
                 andSpreadOf(lowerer, prop.expression) !== null)
             ? lowerConditionalDynSource(lowerer, prop.expression)
@@ -3009,7 +3011,11 @@ function dynSpreadLiteral(
     )
   )
     return null;
-  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), type);
+  // The target is a declared record, so a conditional source's arm has the
+  // record as its checker context: lower the arms as the dyn values whose
+  // own keys the copy reads, not against the record one arm need not
+  // complete.
+  return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr, undefined, true), type);
 }
 
 /** A conditional spread source in a checked-dynamic literal, as the dyn

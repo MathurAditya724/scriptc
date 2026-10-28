@@ -109,8 +109,13 @@ function assertedProbeElementRead(
   if (assertion === null || assertedProbeAccessOf(assertion) !== expr) return null;
   const name = probeMemberName(expr);
   if (name === null) return null;
+  // Only a union of arms has a per-arm answer. Check the checker type first:
+  // speculatively lowering a receiver that is not a union would leave the
+  // helpers it synthesized behind even though the probe declines.
+  if ((lowerer.typeOf(assertion.expression).flags & ts.TypeFlags.Union) === 0) return null;
   const recv = tryLowerExpression(lowerer, expr.expression);
   if (recv === null) return null;
+  if (recv.type.kind !== "union") return null;
   return assertedMemberRead(lowerer, expr.expression, name, recv, locOf(expr));
 }
 

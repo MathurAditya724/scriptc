@@ -120,33 +120,32 @@ export function assertedProbeAccessOf(
 }
 
 /** True when the union's record arms read `member` unevenly: at least one
- * declares it — as a data field or as a getter, which Node's read calls —
- * and at least one does not (an index-signature arm may hold it, which the
- * read answers per value; an arm with only a setter of that name reads
- * undefined). Those are exactly the arms assertedMemberRead answers per
- * arm; anything else keeps the assertion's extraction (and with it the
- * checked-narrow fence for a lying one). */
+ * declares it as a data field and at least one does not (it declares a
+ * getter instead, or nothing), or at least one answers it through a getter
+ * while another arm has no read of it at all. Those are exactly the arms
+ * assertedMemberRead answers per arm; anything else keeps the assertion's
+ * extraction (and with it the checked-narrow fence for a lying one). An arm
+ * with only a setter of that name reads undefined (Node never invokes a
+ * setter on a read), so it counts as an arm with no read. */
 export function partialRecordMember(lowerer: Lowerer, union: IrType, member: string): boolean {
   if (union.kind !== "union") return false;
   const arms = lowerer.unions.get(union.unionId)?.arms ?? [];
   let records = 0;
-  let declaring = 0;
+  let dataFields = 0;
+  let getters = 0;
+  let absent = 0;
   for (const arm of arms) {
     if (isUnitType(arm)) continue;
     if (arm.kind !== "record") return false;
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple) return false;
     records++;
-    // A setter-only arm is not a declaring arm (the read answers undefined,
-    // Node never invokes a setter on a read), but it no longer disqualifies
-    // the union: the per-arm answer names it.
-    if (
-      shape.fields.some((field) => field.name === member) ||
-      shape.fields.some((field) => field.name === `%get:${member}`)
-    )
-      declaring++;
+    if (shape.fields.some((field) => field.name === member)) dataFields++;
+    else if (shape.fields.some((field) => field.name === `%get:${member}`)) getters++;
+    else absent++;
   }
-  return records > 0 && declaring > 0 && declaring < records;
+  if (records === 0) return false;
+  return (dataFields > 0 && dataFields < records) || (getters > 0 && absent > 0);
 }
 
 /** The asserted record type whose checked extraction is deferred for the
