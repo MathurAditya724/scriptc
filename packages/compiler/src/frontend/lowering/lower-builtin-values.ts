@@ -426,21 +426,13 @@ const box = (value: IrExpr): IrExpr =>
   value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc: value.loc };
 
 export function pathModuleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
-  const fields: { key: IrExpr; value: IrExpr }[] = [];
-  const add = (member: string, value: IrExpr): void => {
-    fields.push({ key: strLit(member, loc), value: box(value) });
-  };
-  for (const member of Object.keys(builtinModuleFns()[module] ?? {})) {
-    const value = lowerer.lowerBuiltinCallableValue({ module, member }, loc);
-    if (value) add(member, value);
-  }
-  for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-    const value = builtinModuleConstOf(lowerer, module, member);
-    if (value !== undefined) add(member, builtinConstLit(value, loc));
-  }
-  add("posix", moduleValue(lowerer, "path/posix", loc));
-  add("win32", moduleValue(lowerer, "path/win32", loc));
-  return { kind: "dynObjLit", fields, type: DYN, loc };
+  // node:path's namespaces are module objects: the same handle
+  // `process.getBuiltinModule("node:path")` answers. The handle caches
+  // each member (so `path.join === path.join` and a mutation through one
+  // spelling is visible through the other) and identifies the module, so
+  // `posix === path.posix` holds — the object model the platform
+  // namespaces need when they are VALUES (`const api = win32`).
+  return moduleValue(lowerer, module, loc);
 }
 
 export function utilTypesModuleValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
