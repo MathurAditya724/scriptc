@@ -594,6 +594,9 @@ export interface LlvmTargetOptions {
   /** The files of the program's Node island module tree, in manifest order
    * (node-islands/modules.ts), when the executable carries the tree. */
   nodeIslandModuleData?: Uint8Array;
+  /** The program throws rarely (`--exceptions=rare`): recursive functions
+   * and those near a `throw` also unwind (unwindAbiFunctions). */
+  rareExceptions?: boolean;
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
@@ -2193,7 +2196,13 @@ export class LlEmitter {
       (options.targetTriple
         ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
         : process.platform === "linux")
-        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded, this.nodeIndex)
+        ? unwindAbiFunctions(
+            mod,
+            this.mayThrow,
+            options.unwindExcluded,
+            this.nodeIndex,
+            options.rareExceptions === true,
+          )
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
