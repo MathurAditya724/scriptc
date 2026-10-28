@@ -1,4 +1,5 @@
 // @requires-libnode
+// @order: race
 // X { T 0 { Z { L i-zlib } } } T 2 { B 80 L h-sync }
 import { callSync } from "@scriptc/node";
 import { readFile, writeSync } from "node:fs";

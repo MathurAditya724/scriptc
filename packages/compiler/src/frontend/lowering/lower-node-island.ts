@@ -35,6 +35,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
+import { classMethodValue } from "./class-method-values.js";
+import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
 import { nodeIslandBoundaryDiag, nodeIslandModuleDiag } from "../../diagnostics/diagnostic.js";
 import {
@@ -334,11 +336,35 @@ function islandLoadPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   return literal;
 }
 
+/** The path literal of a module the program shares with its islands
+ * (lower-shared-modules.ts), named by its path in the shipped tree like a
+ * load's. */
+export function islandSharedPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+  const literal: IrExpr & { kind: "strLit" } = { kind: "strLit", value: path, type: STRING, loc };
+  lowerer.nodeIslandModules.addProvided(path);
+  lowerer.nodeIslandLoads.push({ literal, path });
+  return literal;
+}
+
 function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
     fn: "nodeIsland.require",
     args: [islandLoadPath(lowerer, path, loc)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** A static import's load: `nodeIsland.defer(path, snapshot)`, which the
+ * build decides after lowering (node-islands/snapshot.ts, scope-B NI-7):
+ * a module proved effect-free at load keeps it with its interface snapshot
+ * and evaluates on first use; any other becomes nodeIsland.require. */
+function deferIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [islandLoadPath(lowerer, path, loc), { kind: "strLit", value: "", type: STRING, loc }],
     type: DYN,
     loc,
   };
@@ -371,7 +397,7 @@ export function collectIslandImport(
   actions.push({
     kind: "assign",
     localId: binding.global.id,
-    value: loadIslandModule(lowerer, path, loc),
+    value: deferIslandModule(lowerer, path, loc),
     loc,
   });
   // CommonJS named imports: Node's namespace snapshots them once the
@@ -528,6 +554,35 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
   }
+  // Arrays of copied values (or arrays of those) cross as copies of the
+  // island array, directly or as an awaited promise's value; the checked
+  // cast then meets the copy. A native array that crossed in comes back as
+  // itself.
+  if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner)) {
+    const promise: IrExpr = {
+      kind: "libCall",
+      fn: "nodeIsland.awaitCopy",
+      args: [raw],
+      type: { kind: "promise", inner: DYN },
+      loc: raw.loc,
+    };
+    return lowerer.coerceToExpected(promise, mapped);
+  }
+  if (copiedArrayType(lowerer, mapped)) {
+    const copy: IrExpr = {
+      kind: "libCall",
+      fn: "nodeIsland.copyArrays",
+      args: [raw],
+      type: DYN,
+      loc: raw.loc,
+    };
+    return lowerer.coerceToExpected(copy, mapped);
+  }
+  // NI-5: a native value the program passed in comes back as itself (an
+  // export); the checked cast unboxes it, and anything else fails the cast
+  // (types don't lie).
+  if (!copiedType(lowerer, mapped) && exportedByReference(lowerer, tsType))
+    return lowerer.coerceToExpected(raw, mapped);
   if (!copiedType(lowerer, mapped))
     boundaryFail(
       lowerer,
@@ -535,6 +590,12 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
       node,
     );
   return lowerer.coerceToExpected(raw, mapped);
+}
+
+/** An array whose elements are copied values or such arrays. */
+function copiedArrayType(lowerer: Lowerer, t: IrType): boolean {
+  if (t.kind !== "array") return false;
+  return copiedType(lowerer, t.elem) || copiedArrayType(lowerer, t.elem);
 }
 
 /** Whether a value of IR type `t` is copied at the boundary: primitives,
@@ -589,13 +650,195 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
     case "handle":
       return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
     case "dyn":
+      // NI-5: the runtime exports dyn objects by reference and copies only
+      // primitives, strings and (for now) arrays.
+      return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
     case "refused":
+      // NI-5: closures, promises, records and class instances cross by
+      // reference (scr_node_island_export.c): their dyn boxes keep the
+      // native referent, and the closure's thunk checks its arguments.
+      if (exportedByReference(lowerer, lowerer.typeOf(node))) {
+        const lowered = lowerer.lowerExpr(node);
+        const value = lowerer.coerceToExpected(lowered, DYN);
+        return lowered.type.kind === "object"
+          ? withClassMethods(lowerer, value, lowered.type.className, node)
+          : value;
+      }
       return boundaryFail(
         lowerer,
         `a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' value (a native object would cross as a copy and lose its identity)`,
         node,
       );
   }
+}
+
+/** Whether an island reads the lowered method `name` by that name: a
+ * public, string-keyed prototype method. The constructor, #private methods,
+ * accessor halves (`get:x`, `set:x`) and symbol-keyed slots (`sym:iterator`)
+ * are not properties an island can name. */
+function islandMethodName(name: string): boolean {
+  return name !== "constructor" && !name.startsWith("#") && !/^(?:get|set|sym):/.test(name);
+}
+
+/** A class instance crossing into an island: its capsule answers island
+ * reads of its fields, and its prototype methods come from a table the
+ * runtime builds once per class (nodeIsland.classMethods): the unbound
+ * method values, whose thunks check the receiver Node calls them on. */
+function withClassMethods(
+  lowerer: Lowerer,
+  value: IrExpr,
+  className: string,
+  blame: ts.Node,
+): IrExpr {
+  const builder = classMethodsBuilderOf(lowerer, className, blame, value.loc);
+  if (builder === null) return value;
+  return {
+    kind: "libCall",
+    fn: "nodeIsland.classMethods",
+    args: [value, builder],
+    type: DYN,
+    loc: value.loc,
+  };
+}
+
+/** The builder of a class's method table (a dyn closure answering
+ * {name: unbound method value}), or null for a class without methods. */
+function classMethodsBuilderOf(
+  lowerer: Lowerer,
+  className: string,
+  blame: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  const info = lowerer.classes.get(className);
+  if (info === undefined || info.def.runtime) return null;
+  const names: string[] = [];
+  for (
+    let c: typeof info | undefined = info;
+    c !== undefined;
+    c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
+  ) {
+    for (const m of c.def.methods ?? [])
+      if (!names.includes(m) && islandMethodName(m)) names.push(m);
+  }
+  if (names.length === 0) return null;
+  const builder = `%island.methods:${className}`;
+  if (!lowerer.classMethodValueHelpers.has(builder)) {
+    lowerer.classMethodValueHelpers.add(builder);
+    const fields: { key: IrExpr; value: IrExpr }[] = [];
+    for (const m of names) {
+      const method = classMethodValue(lowerer, blame, info, m, loc);
+      if (method === null) continue;
+      fields.push({
+        key: { kind: "strLit", value: m, type: STRING, loc },
+        value: lowerer.coerceToExpected(method, DYN),
+      });
+    }
+    lowerer.liftedFns.push({
+      name: builder,
+      params: [],
+      returnType: DYN,
+      locals: [],
+      body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+      loc,
+    });
+  }
+  const closure: IrExpr = {
+    kind: "closure",
+    fnName: builder,
+    captures: [],
+    type: funcTypeFromParamShapes([], DYN),
+    loc,
+  };
+  return lowerer.coerceToExpected(closure, DYN);
+}
+
+/** NI-6: the method-table builder of the class a shared module exports
+ * (`ident` is its declaration's name), or null. */
+export function classMethodsBuilder(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
+  return classMethodsBuilderOf(lowerer, lowerer.classNamer(decl), ident, loc);
+}
+
+/** NI-6: `new C(...)` from island code for the class a shared module
+ * exports: a function with the constructor's parameters (its dyn thunk
+ * checks the island's arguments) that constructs an instance, as a dyn
+ * closure, or null when the constructor's shape is not a plain list of
+ * parameters (the island's `new` then throws). */
+export function classConstructHelper(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
+  const className = lowerer.classNamer(decl);
+  const info = lowerer.classes.get(className);
+  if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
+  for (let c: typeof info | null = info; c; c = c.base) if (c.def.baseValueGlobal) return null;
+  if (lowerer.inheritsBuiltinErrorCtor(info)) return null;
+  const shapes = info.ctorParams;
+  if (shapes.some((s) => s.mode !== "required" && s.mode !== "omittable")) return null;
+  const name = `%island.new:${className}`;
+  if (!lowerer.classMethodValueHelpers.has(name)) {
+    lowerer.classMethodValueHelpers.add(name);
+    lowerer.noteEdge(`%${className}.constructor`);
+    const params = shapes.map((s, i) => ({ localId: `p${i}`, name: `p${i}`, type: s.type }));
+    const objectType: IrType = { kind: "object", className };
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: objectType,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "new",
+            className,
+            args: params.map((p) => varRef(p.localId, p.type, loc)),
+            type: objectType,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  const closure: IrExpr = {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    type: funcTypeFromParamShapes(shapes, { kind: "object", className }),
+    loc,
+  };
+  return lowerer.coerceToExpected(closure, DYN);
+}
+
+/** Native values NI-5 exports into the island by reference: functions,
+ * promises, and object types other than arrays, tuples, Maps and Sets
+ * (records, interfaces, class instances). A union qualifies when every
+ * arm does or is copied. */
+function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
+  const checker = lowerer.checker;
+  if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          exportedByReference(lowerer, t),
+      );
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  if (checker.isArrayType(type) || checker.isTupleType(type)) return false;
+  const name = type.getSymbol()?.escapedName;
+  if (name === "Map" || name === "Set" || name === "WeakMap" || name === "WeakSet") return false;
+  return true;
 }
 
 /** A fresh object or array literal crosses as a copy (a plain dyn object

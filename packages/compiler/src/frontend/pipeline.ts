@@ -1,7 +1,17 @@
-import { shapeOverlayReport } from "./shape-inference/index.js";
 /** Shared frontend orchestration. Hosts supply a program loader so Node
  * and native callers use the same npm selection, preflight and lowering. */
+import {
+  beginShapeOverlayBuild,
+  excludeRefusedOverlay,
+  recordShapeOverlayMemo,
+  restoreShapeOverlayState,
+  setShapeOverlayDropped,
+  shapeOverlayActive,
+  shapeOverlayMemoPlainFences,
+  shapeOverlayReport,
+} from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import type { NpmStaticStatus } from "../coverage/report.js";
 import { entryFunctionExports, type EntryExportInfo } from "./lib-exports.js";
@@ -110,7 +120,9 @@ export interface Frontend {
    * dispose — it reads the ts7 AST). */
   entryContract: () => ContractFacts;
   sourceTexts: () => Map<string, string>;
-  lower: (opts: LowerOptions) => LowerResult;
+  /** `valid`: the caller's IR validation; a module it rejects with the
+   * shape overlay on is lowered again without the overlay. */
+  lower: (opts: LowerOptions, valid?: (module: IrModule) => boolean) => LowerResult;
   /** Each requested or detected package's native compilation outcome,
    * including the first refusal reason for ineligible packages. */
   npmStatic: NpmStaticStatus[];
@@ -517,6 +529,10 @@ export function runFrontend(
   }
 }
 
+/** Rounds of dropping single refused overlay annotations before the
+ * fallback drops whole files' overlays. */
+const OVERLAY_ANNOTATION_ROUNDS = 4;
+
 function loadFrontend(
   entryPath: string,
   loadProgram: ProgramLoader,
@@ -531,6 +547,7 @@ function loadFrontend(
   // separate compiles in a long-lived process.  A cache miss must observe
   // package.json edits before it can publish a new early-library entry.
   clearResolveCaches();
+  beginShapeOverlayBuild();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
   // Node island detection (the report, or a build that may run islands):
@@ -615,6 +632,32 @@ function loadFrontend(
   // and library builds with a package-specific diagnostic.
   let load = reusableScout ?? loadProgram(entryPath, { npmStatic: requested, externalTypes });
   let preflight = reusablePreflight ?? checkPreflight(load);
+  // Shape inference never makes the preflight fail: when the overlay's
+  // program reports diagnostics the program without it does not (its type
+  // references can load package files the program would not), the build
+  // continues without the overlay.
+  if (preflight.length > 0 && load.shapeOverlayState !== undefined) {
+    restoreShapeOverlayState(load.shapeOverlayState);
+    if (shapeOverlayActive()) {
+      const key = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
+      setShapeOverlayDropped(true);
+      const plain = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+      const plainPreflight = checkPreflight(plain);
+      const known = new Set(plainPreflight.map(key));
+      if (preflight.some((d) => !known.has(key(d)))) {
+        load.dispose();
+        load = plain;
+        preflight = plainPreflight;
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] preflight: the overlay's program failed; overlay off\n`,
+          );
+      } else {
+        plain.dispose();
+        setShapeOverlayDropped(false);
+      }
+    }
+  }
   // Library mode's fixpoint: the opted-in packages' files joined the
   // program just now, and THEIR bare edges (import statements and
   // top-level requires) name packages the scout could not see. Judge each
@@ -755,7 +798,9 @@ function loadFrontend(
     }
   }
 
-  const finalLoad = load;
+  // The lowering may reload once the overlay drops refused annotations.
+  let finalLoad = load;
+  const finalNpmStatic = [...effective];
   // An unknown key or value in the project's scriptc configuration makes
   // the Node island report unavailable (SC8004). The settings configure
   // only that report: a build warns about them and goes on.
@@ -814,18 +859,183 @@ function loadFrontend(
         texts.set(projectConfig.manifest, projectConfig.manifestText);
       return texts;
     },
-    lower: (opts) => {
-      const lowered = lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
-        ...opts,
-        frontendServices: finalLoad.services,
-        startupCrash: finalLoad.startupCrash ?? null,
-        inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
-        moduleEdges: finalLoad.moduleEdges,
-        dynamicImportRejections: finalLoad.dynamicImportRejections,
-        projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
-        externalTypes: finalLoad.externalTypes,
-        externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
-      });
+    lower: (opts, valid) => {
+      const lowerLoad = (l: typeof finalLoad): LowerResult => {
+        if (l.shapeOverlayState !== undefined) restoreShapeOverlayState(l.shapeOverlayState);
+        return lowerToIr(l.program, l.entry, l.moduleOrder, {
+          ...opts,
+          frontendServices: l.services,
+          startupCrash: l.startupCrash ?? null,
+          inlineRequireCycleCalls: l.inlineRequireCycleCalls,
+          moduleEdges: l.moduleEdges,
+          dynamicImportRejections: l.dynamicImportRejections,
+          projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
+          externalTypes: l.externalTypes,
+          externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
+        });
+      };
+      const lowerOnce = (): LowerResult => lowerLoad(finalLoad);
+      let lowered = lowerOnce();
+      // Shape inference never breaks compilation (shape-inference/
+      // fallback.ts): refusals drop the overlay annotations they depend on
+      // and the program reloads. Rounds that stop converging escalate to
+      // the overlay of every file involved, then to no overlay at all.
+      // Refusals deferred to run time (runtime fences) are compared with
+      // the build without the overlay below: a fence the overlay did not
+      // cause stays as it is without the overlay.
+      let level: "annotations" | "files" | "all" = "annotations";
+      // Deferred refusals the coverage pass found in code the lowering
+      // judged unreached count too: that code can still run.
+      const fencesOf = (l: LowerResult): ScrDiagnostic[] => [
+        ...l.runtimeFences,
+        ...(l.unreached?.runtimeFences ?? []),
+      ];
+      if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+        process.stderr.write(
+          `[shape-fallback] lowered: overlay ${shapeOverlayActive()}, ${lowered.diagnostics.length} refusals, ${fencesOf(lowered).length} deferred\n`,
+        );
+      // Failing refusals first; deferred refusals are compared with the
+      // build without the overlay below.
+      for (let round = 0; shapeOverlayActive(); round++) {
+        const refusals = lowered.diagnostics;
+        if (refusals.length === 0) break;
+        if (round >= OVERLAY_ANNOTATION_ROUNDS && level === "annotations") level = "files";
+        else if (round > OVERLAY_ANNOTATION_ROUNDS) level = "all";
+        let changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
+        while (!changed && level !== "all") {
+          level = level === "annotations" ? "files" : "all";
+          changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
+        }
+        // The program reloads anyway: the same round also drops what the
+        // deferred refusals blame, which often saves the comparison below.
+        if (level !== "all" && fencesOf(lowered).length > 0)
+          changed =
+            excludeRefusedOverlay(finalLoad.program, fencesOf(lowered), "fences") || changed;
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] round ${round} level ${level}: ${refusals.length} refusals (${refusals
+              .slice(0, process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all" ? undefined : 3)
+              .map(
+                (d) =>
+                  `${d.loc.file.split("/").pop()}:${d.loc.start} ${process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all" ? d.message : d.message.slice(0, 60)}`,
+              )
+              .join("; ")}), changed ${changed}\n`,
+          );
+        if (!changed) break;
+        const t0 = performance.now();
+        finalLoad.dispose();
+        finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+        const t1 = performance.now();
+        // The preflight fills the module order; the tsc world reads the
+        // files as written, so it answers as the first load did.
+        const reloadPreflight = checkPreflight(finalLoad);
+        if (reloadPreflight.length > 0)
+          return { ...lowered, module: null, diagnostics: reloadPreflight };
+        const t2 = performance.now();
+        lowered = lowerOnce();
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] reload ${(t1 - t0).toFixed(0)} ms, preflight ${(t2 - t1).toFixed(0)} ms, lower ${(performance.now() - t2).toFixed(0)} ms\n`,
+          );
+      }
+      // Deferred refusals the program without the overlay does not have
+      // mean the overlay changed what runs (the overlay must not add
+      // failures the default build lacks). The build lowers the program
+      // without the overlay once, drops what the added refusals blame and
+      // reloads; when they persist (or blame nothing), it compiles without
+      // the overlay, reusing that lowering. A memo of the same JavaScript
+      // that already knows every remaining refusal skips the comparison.
+      let plainFences: Set<string> | null = null;
+      if (shapeOverlayActive() && lowered.diagnostics.length === 0) {
+        const keyOf = (l: typeof finalLoad, d: ScrDiagnostic): string => {
+          const sf = l.program.getSourceFile(d.loc.file);
+          const line = sf === undefined ? -1 : sf.getLineAndCharacterOfPosition(d.loc.start).line;
+          return `${d.code}|${d.loc.file}|${line}`;
+        };
+        const remembered = shapeOverlayMemoPlainFences();
+        const fences = fencesOf(lowered);
+        const knownByMemo =
+          remembered !== null && fences.every((d) => remembered.has(keyOf(finalLoad, d)));
+        if (fences.length > 0 && !knownByMemo) {
+          const overlayState = finalLoad.shapeOverlayState;
+          setShapeOverlayDropped(true);
+          const plainLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+          const plainPreflight = checkPreflight(plainLoad);
+          const plain = plainPreflight.length === 0 ? lowerLoad(plainLoad) : null;
+          setShapeOverlayDropped(false);
+          if (overlayState !== undefined) restoreShapeOverlayState(overlayState);
+          if (plain === null || plain.diagnostics.length > 0) {
+            // Nothing to compare with: the default build itself fails.
+            plainLoad.dispose();
+          } else {
+            const known = new Set(fencesOf(plain).map((d) => keyOf(plainLoad, d)));
+            plainFences = known;
+            let usePlain = false;
+            for (let round = 0; ; round++) {
+              const added = fencesOf(lowered).filter((d) => !known.has(keyOf(finalLoad, d)));
+              if (added.length === 0) break;
+              const changed =
+                round < OVERLAY_ANNOTATION_ROUNDS &&
+                excludeRefusedOverlay(finalLoad.program, added, "fences");
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(
+                  `[shape-fallback] ${added.length} deferred refusals the default build lacks (${added
+                    .slice(0, 3)
+                    .map((d) => `${d.loc.file.split("/").pop()}: ${d.message.slice(0, 60)}`)
+                    .join("; ")}), changed ${changed}\n`,
+                );
+              if (!changed) {
+                usePlain = true;
+                break;
+              }
+              finalLoad.dispose();
+              finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+              if (checkPreflight(finalLoad).length > 0) {
+                usePlain = true;
+                break;
+              }
+              lowered = lowerOnce();
+              if (lowered.diagnostics.length > 0) {
+                usePlain = true;
+                break;
+              }
+            }
+            if (usePlain) {
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(`[shape-fallback] overlay off\n`);
+              setShapeOverlayDropped(true);
+              if (plainLoad.shapeOverlayState !== undefined)
+                restoreShapeOverlayState(plainLoad.shapeOverlayState);
+              finalLoad.dispose();
+              finalLoad = plainLoad;
+              lowered = plain;
+            } else {
+              plainLoad.dispose();
+            }
+          }
+        }
+      }
+      // A module the caller's IR validator rejects (a lowering bug the
+      // overlay's types reach) compiles without the overlay.
+      if (
+        shapeOverlayActive() &&
+        lowered.module !== null &&
+        valid !== undefined &&
+        !valid(lowered.module)
+      ) {
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] the IR validator rejected the module; overlay off\n`,
+          );
+        setShapeOverlayDropped(true);
+        finalLoad.dispose();
+        finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+        const reloadPreflight = checkPreflight(finalLoad);
+        if (reloadPreflight.length > 0)
+          return { ...lowered, module: null, diagnostics: reloadPreflight };
+        lowered = lowerOnce();
+      }
+      recordShapeOverlayMemo(plainFences);
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
       const notes = [
@@ -859,6 +1069,6 @@ function loadFrontend(
             refusals,
           };
         },
-    dispose: finalLoad.dispose,
+    dispose: () => finalLoad.dispose(),
   };
 }

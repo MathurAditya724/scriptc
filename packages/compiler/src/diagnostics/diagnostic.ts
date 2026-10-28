@@ -71,7 +71,7 @@
  *            build checks (SC6103, frontend/shape-inference)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
- *            cannot be checked (SC7001–SC7008, contracts/check.ts)
+ *            cannot be checked (SC7001–SC7009, contracts/check.ts)
  *   SC8xxx  Node islands: packages and modules outside the native subset
  *            that run (or, in report-only mode, would run) in a Node
  *            island — unknown project configuration (SC8004), a package
@@ -333,6 +333,56 @@ export function projectConfigDiag(
     message: `package.json '${path}' ${detail}`,
     loc,
     hint,
+  };
+}
+
+/** SC8011 — a native class extends a class owned by a Node island. Native
+ * subclasses of island classes are scope-B milestone NI-5b. */
+export function nativeSubclassOfIslandDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8011",
+    message:
+      "a native class cannot extend a class owned by a Node island yet (native subclasses of island classes)",
+    loc,
+    hint: "keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this",
+  };
+}
+
+/** SC8020 — a stateful module the program compiles is duplicated across
+ * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
+ * share yet): each side has its own state. */
+export function sharedModuleDuplicatedDiag(
+  module: string,
+  why: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8020",
+    message: `module '${module}' is duplicated across the Node island boundary although it is stateful: ${why}; the program and its islands each see their own copy`,
+    loc,
+    hint: 'remove "share": "duplicate" from its scriptc.packages entry to share one instance',
+  };
+}
+
+/** SC8022 — island code extends a class of a module the program compiles.
+ * A native instance cannot take an island subclass's overrides, so the
+ * module is not owned by the program: a package runs in Node for both
+ * sides (the build retries with it as a Node island); a program module is
+ * refused. */
+export function sharedClassExtendedDiag(
+  pkg: string | null,
+  file: string,
+  base: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8022",
+    message:
+      pkg !== null
+        ? `package '${pkg}' is shared with a Node island that extends its class '${base}': it runs in Node for both sides`
+        : `module '${file}' cannot be shared with a Node island that extends its class '${base}' (island subclasses of native classes)`,
+    loc,
+    hint: "move the subclass into the program, or mark the module as a Node island",
   };
 }
 

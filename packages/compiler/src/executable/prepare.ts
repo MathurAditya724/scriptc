@@ -119,12 +119,15 @@ export function prepareExecutableModule(
     }
 
     try {
-      lowered = fe.lower({
-        ...(islandDecision !== null ? { nodeIslands: islandDecision } : {}),
-        targetPlatform: buildPlatform,
-        ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
-        ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
-      });
+      lowered = fe.lower(
+        {
+          ...(islandDecision !== null ? { nodeIslands: islandDecision } : {}),
+          targetPlatform: buildPlatform,
+          ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
+          ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
+        },
+        (module) => validateModule(module).length === 0,
+      );
       timing("lower");
     } catch (e) {
       // The last-resort panic fence: an upstream tsgo panic that crossed a

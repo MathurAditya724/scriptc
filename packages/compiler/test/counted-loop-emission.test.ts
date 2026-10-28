@@ -471,3 +471,78 @@ test("an exact integer loop limit becomes the endpoint without rounding", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("worker programs run short runs of small innermost loops inside another loop without a poll", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-short-run-polls-"));
+  try {
+    const entry = join(dir, "short.ts");
+    await writeFile(
+      entry,
+      [
+        'import { isMainThread, Worker } from "node:worker_threads";',
+        "export function flips(p: number[], n: number): number {",
+        "  let total = 0;",
+        "  for (let r = 0; r < n; r++) {",
+        "    const k = p[r % p.length]!;",
+        "    for (let i = 1, j = k - 1; i < j; i++, j--) {",
+        "      const t = p[i]!;",
+        "      p[i] = p[j]!;",
+        "      p[j] = t;",
+        "    }",
+        "    total += p[0]!;",
+        "  }",
+        "  return total;",
+        "}",
+        "export function rows(u: Float64Array, v: Float64Array, n: number): void {",
+        "  for (let i = 0; i < n; i++) {",
+        "    let t = 0;",
+        "    for (let j = 0; j < n; j++) t += u[j]! / (i + j + 1);",
+        "    v[i] = t;",
+        "  }",
+        "}",
+        'const n = Number(process.argv[2] ?? "6");',
+        "const u = new Float64Array(n).fill(1);",
+        "const v = new Float64Array(n);",
+        "rows(u, v, n);",
+        "console.log(flips([3, 1, 2, 0, 5, 4], n), v[0]);",
+        "if (!isMainThread) new Worker(new URL(import.meta.url));",
+      ].join("\n"),
+    );
+    const outPath = join(dir, "short.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
+      targetTriple: "x86_64-unknown-linux-gnu",
+    });
+    const body = (name: string): string =>
+      [
+        ...ll.matchAll(
+          new RegExp(
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            "g",
+          ),
+        ),
+      ]
+        .map((match) => match[1]!)
+        .join("\n");
+    for (const [name, limit] of [
+      // Two counters close the gap between them by two steps an iteration.
+      ["flips", 2 * 16384],
+      ["rows", 16384],
+    ] as const) {
+      const text = body(name);
+      const blocks = text.split(/\n(?=[\w.]+:)/);
+      // A test on entry compares the run with its limit and takes a copy
+      // without a poll for a short run, which polls once as it leaves after
+      // a run longer than one block; longer runs keep a copy that polls.
+      expect(text).toContain(`, ${limit}\n`);
+      expect(blocks.some((block) => /^loop\.short\d+:/.test(block))).toBe(true);
+      expect(blocks.some((block) => /^loop\.long\d+:/.test(block))).toBe(true);
+      const polls = blocks.filter((block) => /^loop\.short\.poll\d+:/.test(block));
+      expect(polls.length).toBeGreaterThan(0);
+      for (const poll of polls) expect(poll).toContain("@scr_exc_flag");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -95,6 +95,9 @@ bool scr_ni_is_function(const ScrDyn *value); /* an island handle that is callab
 ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth);
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode); /* 0 Object.keys, 1 Reflect.ownKeys */
 ScrPromise *scr_ni_await(ScrDyn *value);
+/* Island arrays as copies for results typed as arrays of copied values. */
+ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
+ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* Between the two island units. */
@@ -110,6 +113,71 @@ void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue
 void scr_ni_bytes_free(void *owner);
 void scr_ni_handles_install(void);
 void scr_ni_stop(void);
+
+/* ── native values in Node (scope-B NI-5, scr_node_island_export.c) ───────
+ * Closures, promises, records, class instances and dyn objects cross into
+ * Node by reference: one export id and one V8 representative per native
+ * referent. The conversions of scr_node_island_handle.c call these. */
+bool scr_ni_value_out(ScrDyn *v, struct ScrNodeValue *out); /* NI-4's into-V8 conversion */
+ScrDyn *scr_ni_value_in(const struct ScrNodeValue *v);      /* +1 */
+ScrDyn *scr_ni_arg_in(const struct ScrNodeValue *v); /* +1; island Errors as their ScrError */
+bool scr_ni_exportable(const ScrDyn *v);
+void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
+ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
+uint32_t scr_ni_live_exports(void);
+/* nodeIsland.classMethods: registers the method table of a class capsule. */
+ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder);
+void scr_ni_bridge_export_settle(uint32_t id, int rejected, const struct ScrNodeValue *value);
+int scr_ni_host_export_call(uint32_t id, const struct ScrNodeValue *this_,
+                            const struct ScrNodeValue *args, size_t argc, struct ScrNodeValue *out);
+int scr_ni_host_export_construct(uint32_t id, const struct ScrNodeValue *args, size_t argc,
+                                 struct ScrNodeValue *out);
+int scr_ni_host_export_get(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
+int scr_ni_host_export_set(uint32_t id, const struct ScrNodeValue *key,
+                           const struct ScrNodeValue *value, struct ScrNodeValue *out);
+int scr_ni_host_export_has(uint32_t id, const struct ScrNodeValue *key);
+int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
+int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
+void scr_ni_host_export_watch(uint32_t id);
+void scr_ni_host_export_release(uint32_t id);
+/* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */
+void scr_node_island_share(ScrStr *path, ScrStr *exports, ScrDyn *accessor);
+ScrDyn *scr_node_island_shared_tdz(void);
+ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor);
+void scr_ni_shared_refresh(void);
+void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
+void *scr_ni_value_out_begin(ScrDyn *v, struct ScrNodeValue *out, bool *ok);
+void scr_ni_value_out_end(void *keep);
+int scr_ni_host_export_instance_of(uint32_t id, const struct ScrNodeValue *value);
+void scr_ni_host_shared_table(struct ScrNodeValue *out);
+int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, struct ScrNodeValue *out);
+void scr_ni_host_shared_tdz(struct ScrNodeValue *out);
+/* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
+void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
+
+/* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
+ * nodeIsland.defer(path, snapshot): a statically imported island module the
+ * build proved effect-free at load evaluates on first real use instead of
+ * at its import position. The snapshot (lower-node-island.ts) holds the
+ * boot guards (the libnode pack's and the module files' identity) and the
+ * interface snapshot (export names, kinds, function name/length, primitive
+ * constants). Guards pass: the module's value is a stub handle and Node
+ * does not start; a guard fails: the module loads here, eagerly. When Node
+ * starts for any reason, every deferred module evaluates first, in import
+ * order, and each stub is reconciled with its real value (same ref, so
+ * identity holds for the rest of the program). +1, NULL with an exception
+ * pending (an eager load that threw). */
+ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot);
+/* Between the boot and handle units. */
+ScrDyn *scr_ni_stub_new(uint32_t flags, void *stub); /* +1 box over a fresh stub ref */
+void *scr_ni_stub_of(const ScrDyn *value); /* the stub entry of an unmaterialized stub, or NULL */
+bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real);
+ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len); /* +1 or NULL: unknown */
+bool scr_ni_boot_plain_class(void *stub);
+const char *scr_ni_pack_dir(void); /* the libnode pack directory this run uses */
+void scr_ni_boot_stub_failed(void *stub); /* raises the module's load error */
+/* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
+extern void (*scr_ni_started_hook)(void);
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);

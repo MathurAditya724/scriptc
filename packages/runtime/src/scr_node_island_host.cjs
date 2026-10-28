@@ -56,6 +56,65 @@ const ERROR_KINDS = [
   [URIError, 7],
 ];
 
+// structuredClone of native values (NI-5). A native record, class
+// instance or object is an object with interceptors in V8, which V8's
+// serializer cannot clone (DataCloneError). Node clones such values as the
+// plain data they are, so when a clone fails on a value holding native
+// values, it clones a plain copy instead: native values and the plain
+// objects and arrays around them are copied (own enumerable string keys,
+// shared references and cycles kept), everything else is cloned as is.
+const nodeStructuredClone = globalThis.structuredClone;
+function plainCopy(value, memo) {
+  if (value === null || typeof value !== "object") return value;
+  if (memo.has(value)) return memo.get(value);
+  const native = nativeHost.isExport(value);
+  if (Array.isArray(value)) {
+    // Own enumerable keys, as structuredClone copies them: holes stay holes
+    // and named properties come along.
+    const out = new Array(value.length);
+    memo.set(value, out);
+    for (const key of Object.keys(value)) out[key] = plainCopy(value[key], memo);
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (!native && proto !== Object.prototype && proto !== null) return value;
+  const out = {};
+  memo.set(value, out);
+  for (const key of Object.keys(value)) out[key] = plainCopy(value[key], memo);
+  return out;
+}
+function holdsNative(value, seen) {
+  if (value === null || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  if (nativeHost.isExport(value)) return true;
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) return false;
+  for (const key of Object.keys(value)) if (holdsNative(value[key], seen)) return true;
+  return false;
+}
+if (typeof nodeStructuredClone === "function") {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "structuredClone");
+  const structuredClone = {
+    structuredClone(value, options = undefined) {
+      try {
+        return Reflect.apply(nodeStructuredClone, globalThis, arguments);
+      } catch (error) {
+        if (!holdsNative(value, new Set())) throw error;
+        return Reflect.apply(nodeStructuredClone, globalThis, [
+          plainCopy(value, new Map()),
+          options,
+        ]);
+      }
+    },
+  }.structuredClone;
+  Object.defineProperty(globalThis, "structuredClone", {
+    configurable: descriptor === undefined || descriptor.configurable,
+    enumerable: descriptor !== undefined && descriptor.enumerable,
+    writable: true,
+    value: structuredClone,
+  });
+}
+
 const requires = new Map();
 
 function exportedFunction(file, specifier, name) {
@@ -163,11 +222,24 @@ function call(id, sync, file, specifier, name, argsJson) {
 // answers a promise of the namespace.
 const { pathToFileURL } = require("node:url");
 
+// Island imports of modules the program shares resolve to their native
+// exports (NI-6, scr_node_island_hooks.cjs, appended to this file).
+let sharedModules = null;
+
 function load(path, esm) {
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
+  if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
   if (esm) return import(pathToFileURL(path).href);
-  return createRequire(path)(path);
+  const load = createRequire(path);
+  return sharedModules.entry(path, (entry) => {
+    if (entry !== null) load(entry);
+    return load(path);
+  });
+}
+
+function sharedPush(mod, slot, value) {
+  if (sharedModules !== null) sharedModules.push(mod, slot, value);
 }
 
 // ── the hosted loop (scope-B NI-3) ─────────────────────────────────────
@@ -328,24 +400,37 @@ process.on("removeListener", (event, listener) => {
 // for process.once, which registers through process.on): tag each entry
 // with it as its registration returns. Node emits newListener before it
 // installs the listener, so the entry learns its raw only afterwards.
-for (const name of ["on", "addListener", "prependListener"]) {
-  const add = process[name];
-  process[name] = function addListener(event, listener) {
-    const start = islandListeners.length;
-    const result = Reflect.apply(add, this, arguments);
-    if (islandListeners.length > start) {
-      const registered = listener.listener ?? listener;
-      for (let i = start; i < islandListeners.length; i++) {
-        const entry = islandListeners[i];
-        if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
-          entry.raw = listener;
-          break;
-        }
-      }
+function tagRaw(start, event, listener) {
+  if (islandListeners.length === start) return;
+  const registered = listener.listener ?? listener;
+  for (let i = start; i < islandListeners.length; i++) {
+    const entry = islandListeners[i];
+    if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
+      entry.raw = listener;
+      return;
     }
-    return result;
-  };
+  }
 }
+
+// The wrappers replacing process's emitter methods, installed together by
+// installProcessMethods below. One wrapper serves `on` and `addListener`,
+// which are one function in Node, and each has the name of the Node function
+// it wraps.
+const processMethods = {};
+const nodeAddListener = process.addListener;
+const nodePrependListener = process.prependListener;
+processMethods.on = processMethods.addListener = function addListener(event, listener) {
+  const start = islandListeners.length;
+  const result = Reflect.apply(nodeAddListener, this, arguments);
+  tagRaw(start, event, listener);
+  return result;
+};
+processMethods.prependListener = function prependListener(event, listener) {
+  const start = islandListeners.length;
+  const result = Reflect.apply(nodePrependListener, this, arguments);
+  tagRaw(start, event, listener);
+  return result;
+};
 
 function emit(kind, id, name, arg) {
   const entry = islandListeners.find((e) => e.id === id);
@@ -361,10 +446,31 @@ function emit(kind, id, name, arg) {
 }
 
 const nodeEmit = process.emit;
-process.emit = function emit(event, ...args) {
+processMethods.emit = function emit(event, ...args) {
   if (event === "exit") return this.listenerCount("exit") > 0;
   return Reflect.apply(nodeEmit, this, [event, ...args]);
 };
+
+// Node's process inherits its emitter methods from EventEmitter.prototype,
+// through a prototype of its own that holds only `constructor`. The wrappers
+// go on that prototype with EventEmitter.prototype's attributes, so process
+// has no own property for them: Object.keys(process), Object.hasOwn and
+// for...in see what they see in Node. for...in lists a prototype's keys
+// before its parent's, so the keys EventEmitter.prototype lists before the
+// last wrapped method are defined there too, with the same values, in their
+// order.
+function installProcessMethods() {
+  const processPrototype = Object.getPrototypeOf(process);
+  const emitterPrototype = Object.getPrototypeOf(processPrototype);
+  const keys = Object.keys(emitterPrototype);
+  const last = Math.max(...Object.keys(processMethods).map((key) => keys.indexOf(key)));
+  for (const key of keys.slice(0, last + 1)) {
+    const descriptor = Object.getOwnPropertyDescriptor(emitterPrototype, key);
+    if (Object.hasOwn(processMethods, key)) descriptor.value = processMethods[key];
+    Object.defineProperty(processPrototype, key, descriptor);
+  }
+}
+installProcessMethods();
 
 // Writes reach the shared stdout and stderr before control returns to the
 // program, as the program's own writes do.
@@ -402,4 +508,5 @@ globalThis.__scriptcNodeIsland = {
   nextTick,
   emit,
   load,
+  sharedPush,
 };

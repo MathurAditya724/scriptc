@@ -41,7 +41,11 @@ import {
   type UnitEvents,
   type WaveHost,
 } from "./unit-journal.js";
-import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
+import {
+  moduleNamespaceDynValue,
+  moduleNamespaceObject,
+  moduleNamespaceValue,
+} from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
@@ -118,7 +122,11 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
-import { lowerWebStreamNew, lowerWebStreamStaticCall } from "./builtins/web-streams-dyn.js";
+import {
+  installFetchBodyWebStreams,
+  lowerWebStreamNew,
+  lowerWebStreamStaticCall,
+} from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
@@ -197,6 +205,7 @@ import {
   captureContextBinding,
   declareContextLocal,
   declareContextThis,
+  newFnCtx,
   type FnCtx,
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
@@ -221,6 +230,7 @@ import { recordTextCodecClass } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
+import { returnDispatchReceivers } from "./receiver-returns.js";
 import {
   analyzeTiers,
   dynamicStatementCount,
@@ -1468,7 +1478,10 @@ function lowerToIrWithIslands(
   }
   // Divergence warnings over the program's own modules: computed once,
   // after lowering, from the same checker (never part of a failure).
-  const divergences = scanDivergences(resultLowerer, moduleOrder);
+  const divergences = [
+    ...scanDivergences(resultLowerer, moduleOrder),
+    ...resultLowerer.sharedModuleWarnings,
+  ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
   // The performance warning (SC6101): likely-hot functions of the program
@@ -3631,6 +3644,11 @@ export class Lowerer {
   }[] = [];
   /** Each island module load's path literal, set to its tree path when lowering ends. */
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
+  /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
+   * their SC8020 warnings, and the TDZ flags their declarations set. */
+  sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
+  readonly sharedModuleWarnings: ScrDiagnostic[] = [];
+  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -4116,6 +4134,10 @@ export class Lowerer {
       setTable("freezableArrays", this.freezableArrays),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
+      // The shared-module plan runs inside the first unit that lowers a
+      // module; a warning it adds is a diagnostic of that unit, so its count
+      // is journaled like `diags` (the plan itself is unjournaled).
+      checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -4393,6 +4415,11 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // The modules shared with the islands (NI-6): a pure function of the
+    // program's modules, computed once, and the TDZ flags its plan gives a
+    // statement.
+    "sharedModules",
+    "sharedInitFlags",
     "slotOriginMemo",
     "recordOriginMemo",
     "boundaryCastOrder",
@@ -5020,6 +5047,7 @@ export class Lowerer {
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       isNpmFile: (sf) => this.isNpmFile(sf),
+      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: (sf) =>
@@ -5231,6 +5259,79 @@ export class Lowerer {
     if (type.kind !== "moduleNs" || !type.moduleId.startsWith("file:")) return null;
     const path = type.moduleId.slice("file:".length);
     return this.moduleOrder.find((sf) => tsgoPath(resolve(sf.fileName)) === path) ?? null;
+  }
+
+  /** A module namespace taken as a checked-dynamic value (`const u: unknown
+   * = ns`, `take(ns)`): the runtime's namespace object — one per module,
+   * Node's sorted export keys, live reads through a compiled getter, and
+   * Node's read-only write errors — built by `moduleNamespaceDynValue`.
+   * `node:` builtins have no compiled source and no complete export table,
+   * so they keep their fence. */
+  moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    if (!ns.type.moduleId.startsWith("file:")) return null;
+    return moduleNamespaceDynValue(this, ns);
+  }
+
+  /** A `Promise<module namespace>` taken as `Promise<unknown>` (or as
+   * `unknown`): one lifted async mapper per module awaits the promise and
+   * answers the same namespace object a bare namespace value boxes to, so
+   * the settlement is Node's namespace while the value stays a promise.
+   * The import() promise reaches these slots alone, and the runtime's
+   * per-module namespace cache keeps `await mapped === await original`; a
+   * rejection propagates unchanged. */
+  moduleNamespacePromiseDynValue(
+    value: IrExpr & { type: IrType & { kind: "promise" } },
+  ): IrExpr | null {
+    const inner = value.type.inner;
+    if (inner.kind !== "moduleNs" || !inner.moduleId.startsWith("file:")) return null;
+    const loc = value.loc;
+    const name = `%module.promise:${inner.moduleId}`;
+    const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
+    if (!this.liftedFns.some((fn) => fn.name === name)) {
+      const context = newFnCtx(false, null, null, DYN);
+      context.isAsync = true;
+      const previousClass = this.currentClass;
+      this.currentClass = null;
+      this.fnStack.push(context);
+      let namespace: IrExpr | null = null;
+      try {
+        const awaited: IrExpr & { type: IrType & { kind: "moduleNs" } } = {
+          kind: "awaitExpr",
+          value: varRef("promise", promiseT, loc),
+          type: inner,
+          loc,
+        };
+        namespace = moduleNamespaceDynValue(this, awaited);
+        if (namespace) {
+          const fn: IrFunction = {
+            name,
+            params: [{ localId: "promise", name: "promise", type: promiseT }],
+            returnType: DYN,
+            locals: [
+              { id: "promise", name: "promise", type: promiseT, mutable: false },
+              ...context.locals,
+            ],
+            body: [{ kind: "return", value: namespace, loc }],
+            async: true,
+            loc,
+          };
+          this.liftedFns.push(fn);
+        }
+      } finally {
+        this.fnStack.pop();
+        this.currentClass = previousClass;
+      }
+      // A namespace with no compiled source has no dynamic value: keep the
+      // promise unconverted so the destination's own fence reports it.
+      if (!namespace) return null;
+    }
+    return {
+      kind: "call",
+      callee: name,
+      args: [value],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
   }
 
   builtinErrorInfoOf(symbol: ts.Symbol | null | undefined): ClassInfo | null {
@@ -9466,6 +9567,8 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
+    installFetchBodyWebStreams(this, functions);
+    returnDispatchReceivers(this, functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -11985,6 +12088,21 @@ export class Lowerer {
       const result = this.coerceToExpected(expr.result, expected);
       return { ...expr, result, type: result.type };
     }
+    // A `Promise<module namespace>` widening into `Promise<unknown>`, or
+    // into an `unknown` slot: map the payload through the namespace's
+    // dynamic value (moduleNamespacePromiseDynValue). A destination that
+    // wants the namespace type itself keeps the promise unchanged; the
+    // union path reuses this through its single-promise-arm conversion.
+    if (
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind === "moduleNs" &&
+      (expected.kind === "dyn" || (expected.kind === "promise" && expected.inner.kind === "dyn"))
+    ) {
+      const mapped = this.moduleNamespacePromiseDynValue(
+        expr as IrExpr & { type: IrType & { kind: "promise" } },
+      );
+      if (mapped) expr = mapped;
+    }
     // An instance of a class declared `extends Array` is its array (the
     // same object); an array slot of another element type converts it as
     // an array.
@@ -12131,6 +12249,16 @@ export class Lowerer {
         const ns = expr as IrExpr & { type: IrType & { kind: "moduleNs" } };
         const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
+      }
+      // A TypeScript source's module namespace as an untyped value: the
+      // runtime's namespace object with live reads, Node's sorted keys and
+      // read-only writes. `node:` builtins have no compiled source or
+      // complete export table here and keep their fence below.
+      if (expr.type.kind === "moduleNs") {
+        const boxed = this.moduleNamespaceDyn(
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (boxed) return boxed;
       }
       if (
         expr.type.kind === "moduleNs" &&

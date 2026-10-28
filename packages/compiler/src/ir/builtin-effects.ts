@@ -12,6 +12,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",
   "nodeIsland.set",
@@ -21,6 +22,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.applyTo",
   "nodeIsland.construct",
   "nodeIsland.instanceof",
+  "nodeIsland.classMethods",
+  "nodeIsland.classMethodsOf",
+  "nodeIsland.copyArrays",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.
@@ -917,6 +921,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",
   "zlib.inflateRawSync",

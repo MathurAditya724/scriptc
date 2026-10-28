@@ -2387,8 +2387,20 @@ export function emitRecordShapes(
           `  %shp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${SHAPE_WORD_INDEX}`,
           `  store i32 ${shapeNumber}, ptr %shp ; shape number`,
         );
+      // A record literal covers every field of its shape (ir.ts recordLit),
+      // so without dispose entries, which read the fields at the drop, no
+      // field is read before the literal stores it.
       defs.push(
-        ...arenaNewLines(host, newSym, sizeOf, traced ? cycType : null, dispose, init, "%o"),
+        ...arenaNewLines(
+          host,
+          newSym,
+          sizeOf,
+          traced ? cycType : null,
+          dispose,
+          init,
+          "%o",
+          dispose === null ? "header" : "object",
+        ),
       );
       if (dispose !== null)
         defs.push(

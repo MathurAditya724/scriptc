@@ -987,6 +987,9 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
       job(arg);
     return;
   }
+  /* Island code is about to run: it sees the current native values of
+   * shared exports (NI-6). */
+  scr_ni_shared_refresh();
   if (ni_stack == NULL) {
     ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
@@ -1131,6 +1134,7 @@ static void ni_host_exit(int code) {
 static void ni_host_run(uint32_t kind, uint32_t token) {
   NI_MARK_BEGIN;
   scr_loop_hosted_run(kind, token);
+  scr_ni_shared_refresh();
   NI_MARK_END;
 }
 
@@ -1165,6 +1169,19 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_stack_start,
     &scr_ni_settle_value,
     &scr_ni_bytes_free,
+    &scr_ni_host_export_call,
+    &scr_ni_host_export_construct,
+    &scr_ni_host_export_get,
+    &scr_ni_host_export_set,
+    &scr_ni_host_export_has,
+    &scr_ni_host_export_delete,
+    &scr_ni_host_export_keys,
+    &scr_ni_host_export_watch,
+    &scr_ni_host_export_release,
+    &scr_ni_host_export_instance_of,
+    &scr_ni_host_shared_table,
+    &scr_ni_host_shared_get,
+    &scr_ni_host_shared_tdz,
 };
 
 typedef struct {
@@ -1210,6 +1227,8 @@ static void ni_stop_atexit(void) {
     fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
   }
   ni_on_node_stack(ni_stop_job, NULL);
+  /* Node is gone: no representative can call in again. */
+  scr_ni_exports_release_all();
 }
 
 /* The hosted loop's run_loop on Node's stack. */
@@ -1301,11 +1320,18 @@ static ScrNodeBridge ni_hosted;
 
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
+void (*scr_ni_started_hook)(void) = NULL;
+
 static void ni_start(void) {
   if (ni_bridge != NULL) return;
   /* Timers pending now keep their deadlines relative to this moment: the
    * time Node takes to load is invisible to their order. */
   double since = scr_now_ms();
+  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  if (trace != NULL && strstr(trace, "boot") != NULL) {
+    fflush(stdout);
+    fprintf(stderr, "[node-islands] starting Node\n");
+  }
   const char *dir = ni_pack_dir();
   ni_open_modules();
   char path[4352];
@@ -1379,6 +1405,9 @@ static void ni_start(void) {
   ni_hosted.immediate_ref = &ni_h_immediate_ref;
   ni_hosted.checkpoint = &ni_h_checkpoint;
   scr_loop_host(&ni_hosted, since);
+  /* NI-7: deferred island modules evaluate now, before the operation that
+   * needed Node, in their import order. */
+  if (scr_ni_started_hook != NULL) scr_ni_started_hook();
 }
 
 const ScrNodeBridge *scr_ni_bridge(void) {
@@ -1388,6 +1417,7 @@ const ScrNodeBridge *scr_ni_bridge(void) {
 
 const ScrNodeBridge *scr_ni_bridge_loaded(void) { return ni_bridge; }
 
+const char *scr_ni_pack_dir(void) { return ni_pack_dir(); }
 char *scr_ni_module_path(const ScrStr *path) {
   if (path->len >= 2 && path->data[0] == '.' && path->data[1] == '/')
     return ni_tree_path(path->data + 2, path->len - 2);

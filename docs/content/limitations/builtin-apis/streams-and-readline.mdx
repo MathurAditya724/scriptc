@@ -65,4 +65,7 @@
   Their underlying sources, sinks, and transformers, queuing strategies with a `size` function, readers and writers, `tee`, `pipeTo` and `pipeThrough` with their options and an abort signal, `ReadableStream.from`, and async iteration settle promises in Node's order, and the streams take own properties.
   `TextDecoderStream` decodes UTF-8; its other encodings are unsupported.
   A JavaScript `ReadableStream` given as a `Response` or `Request` body, or as `fetch`'s body, is read through a stream of its own: `response.body` is that stream rather than the one passed in, and the stream passed in is locked from the start.
+  In JavaScript, a `Response` or `Request` body has the members of a `ReadableStream`, including `tee`, `pipeTo`, `pipeThrough`, `values`, and `for await`, and its lock and `bodyUsed` follow them.
+  After one of those members is used, a body given to a new `Response` or `Request` is locked from the start, as a JavaScript `ReadableStream` is.
+  In a program that names none of the web stream classes, those members are available when the program's JavaScript names one of them or iterates a body with `for await`; reached only through a computed key, they are not.
   In JavaScript, a byte stream (`type: 'bytes'`), a BYOB reader, a class that extends one of these classes, `Object.getPrototypeOf` on these values, their use as `WeakMap` and `WeakSet` keys, and `ReadableStream.from` of a function that is not iterable are unsupported.

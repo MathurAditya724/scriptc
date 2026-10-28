@@ -1037,7 +1037,9 @@ export function isRefCounted(t: IrType): boolean {
  * Only the relative paths enter an executable. */
 export interface IrNodeIslandModules {
   root: string;
-  files: { path: string; size: number; sha256: string }[];
+  /** `placeholder`: a program module the islands share, shipped as
+   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
+  files: { path: string; size: number; sha256: string; placeholder?: true }[];
   links: { path: string; target: string }[];
   /** Where the executable finds the tree: absent when it carries the tree
    * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
@@ -1227,6 +1229,12 @@ export interface IrContracts {
    * static reference counting is elided, and the cycle analysis treats them
    * as leaves. */
   programLifetime?: string[];
+  /** Inline array fields, `${declaring class}\0${field}`: an array field of
+   * a ProgramLifetime class that its constructor writes once, from one of
+   * its parameters, and nothing else writes. Its elements are fixed for the
+   * instance's lifetime, so the backend may keep them in the instance itself
+   * (ir/inline-arrays.ts). */
+  inlineArrays?: string[];
 }
 
 export type IrFfiValueParamClass =

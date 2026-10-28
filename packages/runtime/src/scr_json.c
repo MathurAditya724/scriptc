@@ -2652,6 +2652,18 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     return scr_dyn_object_prototype();
   }
   if (object == scr_builtin_array_prototype) return scr_dyn_object_prototype();
+#ifdef SCR_NODE_ISLANDS
+  /* An island object: its V8 prototype, through the __proto__ accessor
+   * (undefined for an object without Object.prototype: null). */
+  if (scr_ni_is_handle(object)) {
+    ScrDyn *proto = scr_ni_get_str(object, "__proto__", 9);
+    if (proto != NULL && proto->kind == SCR_DYN_UNDEF) {
+      scr_dyn_release(proto);
+      return scr_dyn_new_null();
+    }
+    return proto;
+  }
+#endif
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -7015,16 +7027,20 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result;
-  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
 #ifdef SCR_HANDLE_CLASSES
-    /* A class's method value reaches the class's method past the handle's
-     * own properties; this build is the one programs with such classes
-     * link. */
-    result = scr_dyn_handle_class_method_call(ops, self, method->name, args, argc);
-#else
-    result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
-#endif
+  /* A class's method value reaches the class's method past the handle's
+   * own properties, and runs on the instance a handle of an alias tag
+   * stands for; this build is the one programs with such classes link. */
+  ScrDyn *receiver = NULL;
+  if (scr_dyn_handle_class_receiver(tag, self, &receiver)) {
+    result = receiver ? scr_dyn_handle_class_method_call(ops, receiver, method->name, args, argc) : NULL;
+    scr_dyn_release(receiver);
   } else {
+#else
+  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+    result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
+  } else {
+#endif
     const char *message = method->invalid_this ? method->invalid_this
                           : ops->invalid_this  ? ops->invalid_this
                                                : "Illegal invocation";

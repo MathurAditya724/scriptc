@@ -2089,6 +2089,16 @@ ScrDyn *scr_dyn_handle_class_prototype(ScrDynHandleTag tag);
 /* Handles of `tag` (another unit's native representation of the same
  * interface) are instances of the class of `klass_tag`. */
 void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag);
+/* The instance of the class a handle of an alias tag stands for, which
+ * the class's methods and getters run on (+1, or NULL with the exception
+ * pending). Without one, they throw their ERR_INVALID_THIS TypeError on
+ * the alias's handles. */
+void scr_dyn_handle_class_alias_view(ScrDynHandleTag tag, ScrDyn *(*view)(ScrDyn *handle));
+/* The receiver a method or getter of the class of `klass_tag` runs on for
+ * `self`: true with *out set to self, or to the instance an alias handle
+ * stands for (+1, or NULL with the exception pending); false when self is
+ * neither. */
+bool scr_dyn_handle_class_receiver(ScrDynHandleTag klass_tag, ScrDyn *self, ScrDyn **out);
 /* The class tag a handle is an instance of, or SCR_DYNH_CAPACITY for a
  * handle of no class. */
 ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle);

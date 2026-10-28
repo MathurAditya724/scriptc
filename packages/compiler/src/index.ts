@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
+import { setShapeOverlayMemoDir, shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { nodeFrontendServices } from "./frontend/services-node.js";
 import {
   runTypePatchCommand,
@@ -113,7 +113,9 @@ import {
   nativeProfileKey,
   nativeProfileLayout,
   nativeProfileRefusal,
+  profileBlocksPath,
   profileHasContextCounts,
+  recordProfileBlocksPath,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
@@ -142,8 +144,9 @@ import {
   isTypePatchCode,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
+import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
 import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
+import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -501,10 +504,11 @@ export async function compile(
   opts: CompileRequestOptions,
 ): Promise<CompileRequestResult> {
   clearCompileSessionCaches();
-  // `shapeOverlay: false` reaches the frontend (and its child process)
-  // through the environment the overlay reads.
+  // `shapeOverlay` reaches the frontend (and its child process) through
+  // the environment the overlay reads.
   const overlayEnv = process.env["SCRIPTC_SHAPE_OVERLAY"];
-  if (opts.shapeOverlay === false) process.env["SCRIPTC_SHAPE_OVERLAY"] = "0";
+  if (opts.shapeOverlay !== undefined)
+    process.env["SCRIPTC_SHAPE_OVERLAY"] = opts.shapeOverlay ? "1" : "0";
   const frontendInputs = new FrontendInputTracker();
   const warnings: CompileWarningSink = { warnings: [], sourceTexts: null };
   // compileTracked starts it for a build with no earlier build of the same invocation.
@@ -517,7 +521,7 @@ export async function compile(
   } finally {
     setLibDiagnosticsStore(null);
     frontendProcess?.release();
-    if (opts.shapeOverlay === false) {
+    if (opts.shapeOverlay !== undefined) {
       if (overlayEnv === undefined) delete process.env["SCRIPTC_SHAPE_OVERLAY"];
       else process.env["SCRIPTC_SHAPE_OVERLAY"] = overlayEnv;
     }
@@ -698,6 +702,7 @@ async function compileExecutableNative(
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
+    ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
@@ -823,8 +828,8 @@ async function removeNativeProgramObject(
   );
 }
 
-/** The request's profile. An indexed profile is read here so every cache keys
- * its bytes. */
+/** The request's profile. An indexed profile and the block-count file beside
+ * it are read here so every cache keys their bytes. */
 async function readNativeProfile(
   opts: CompileRequestOptions,
 ): Promise<NativeProfileOptions | undefined> {
@@ -839,12 +844,27 @@ async function readNativeProfile(
       `cannot read --profile-use file ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  const blocksPath = profileBlocksPath(path);
+  const blockBytes = existsSync(blocksPath) ? await readFile(blocksPath) : null;
   const use = {
     path,
     digest: createHash("sha256").update(bytes).digest("hex"),
     contextSensitive: profileHasContextCounts(bytes),
+    ...(blockBytes === null
+      ? {}
+      : {
+          blocks: {
+            path: blocksPath,
+            digest: createHash("sha256").update(blockBytes).digest("hex"),
+          },
+        }),
   };
-  return generate === undefined ? { use } : { generate, use };
+  const recordBlocks = recordProfileBlocksPath(process.env);
+  return {
+    ...(generate === undefined ? {} : { generate }),
+    use,
+    ...(recordBlocks === undefined ? {} : { recordBlocks: resolve(recordBlocks) }),
+  };
 }
 
 /** The digest of the request's function layout file, which keys the
@@ -937,6 +957,15 @@ async function prepareExecutableInput(
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
       mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
+      // Deferred island modules (scope-B NI-7): probed in the same pack.
+      finalizeDeferredIslands(
+        mod,
+        entryPath,
+        libnodeProbePack(opts.libnode, process.env, dirname(entryPath)),
+      );
+    } else {
+      // IR, LLVM and object outputs have no pack to probe with: eager.
+      finalizeDeferredIslands(mod, entryPath, null);
     }
   }
   // The island module tree ships with the program: beside the executable
@@ -1204,6 +1233,16 @@ async function stageDriverBuildSources(
  * (`runFrontendProcess`). Node's heap keeps the pages a build's frontend used for the life of the
  * process, so running them in a process of their own leaves the native helper the memory they took.
  */
+/** The shape overlay's memo directory for the current executable build
+ * (frontend/shape-inference/memo.ts): per compiler, in the build cache. */
+let shapeOverlayMemo: string | null = null;
+
+function shapeOverlayMemoDir(cacheRoot: string | null, implementation: string): string | null {
+  return cacheRoot === null
+    ? null
+    : join(cacheRoot, "shape-overlay-v1", implementation.slice(0, 24));
+}
+
 const frontendProcessEntry = fileURLToPath(new URL("./frontend-process.js", import.meta.url));
 
 /**
@@ -1283,6 +1322,8 @@ interface FrontendProcessRequest {
   timing: TimingClock;
   /** The compile's --provenance-sources mappings, which the frontend process installs. */
   provenance: ProvenanceSources | null;
+  /** The shape overlay's memo directory (shapeOverlayMemoDir). */
+  shapeOverlayMemo: string | null;
 }
 
 /** What the frontend process sends back. A thrown error comes back as `failed`. */
@@ -1336,6 +1377,7 @@ async function prepareExecutableInputInChild(
       buildPlatform,
       timing: timingClock,
       provenance: provenanceSources(),
+      shapeOverlayMemo,
     };
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
     const exitCode = await frontendProcess.run(requestPath, resultPath);
@@ -1399,9 +1441,12 @@ function configureLibDiagnostics(root: string | null): void {
 export async function runFrontendProcess(requestPath: string, resultPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as FrontendProcessRequest;
   // The process started before the build's options were known.
-  if (request.opts.shapeOverlay === false) process.env["SCRIPTC_SHAPE_OVERLAY"] = "0";
+  if (request.opts.shapeOverlay !== undefined)
+    process.env["SCRIPTC_SHAPE_OVERLAY"] = request.opts.shapeOverlay ? "1" : "0";
   clearCompileSessionCaches();
   setProvenanceSources(request.provenance);
+  shapeOverlayMemo = request.shapeOverlayMemo;
+  setShapeOverlayMemoDir(request.shapeOverlayMemo);
   // The compile that started this process prepared the cache root.
   configureLibDiagnostics(
     (request.opts.outputKind ?? "exe") === "exe" && provenanceSources() === null
@@ -1471,6 +1516,8 @@ async function compileTracked(
   const timing = compilationTiming();
   const timingStart = Date.now();
   entryPath = resolve(entryPath);
+  shapeOverlayMemo = null;
+  setShapeOverlayMemoDir(null);
   const outputKind = opts.outputKind ?? "exe";
   if (
     (opts.backend !== undefined && opts.backend !== "llvm") ||
@@ -1743,8 +1790,9 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  // A build that records block counts reuses no cached executable.
   const cacheRoot =
-    outputKind === "exe" && provenanceSources() === null
+    outputKind === "exe" && provenanceSources() === null && profile?.recordBlocks === undefined
       ? await prepareBuildCacheRoot(buildCacheRoot())
       : null;
   configureLibDiagnostics(cacheRoot);
@@ -1823,6 +1871,8 @@ async function compileTracked(
       implementation: implementation.digest,
       implementationDependencies: implementation.dependencies,
     };
+    shapeOverlayMemo = shapeOverlayMemoDir(cacheRoot, implementation.digest);
+    setShapeOverlayMemoDir(shapeOverlayMemo);
   }
   // A cache hit emits no module, so it would write no representation report.
   const cachedHit =

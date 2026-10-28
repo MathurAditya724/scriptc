@@ -4,7 +4,7 @@ import { declareArgumentCount } from "./argument-counts.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
-import { declareContextLocal } from "./function-context.js";
+import { declareContextLocal, type FnCtx } from "./function-context.js";
 import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
@@ -74,6 +74,19 @@ function declareCallReceiver(
       : bound,
     loc,
   };
+}
+
+/** Remove the receiver declaration when no lookup of `this` reached it:
+ * the parameters, the body and nested arrows never read it, so the entry
+ * does not read the call-site receiver. */
+function dropUnreadReceiver(ctx: FnCtx, prologue: IrStmt[], receiver: IrStmt | null): void {
+  if (receiver === null || receiver.kind !== "varDecl" || ctx.thisRead) return;
+  const at = prologue.indexOf(receiver);
+  if (at < 0) return;
+  prologue.splice(at, 1);
+  const local = ctx.locals.findIndex((l) => l.id === receiver.localId);
+  if (local >= 0) ctx.locals.splice(local, 1);
+  ctx.thisLocal = null;
 }
 
 /** True when the identifier resolves (through import aliases) to a
@@ -502,6 +515,7 @@ export function lowerLambda(
       funcType = { ...funcType, ret: bodyReturn };
       fnCtx.returnType = bodyReturn;
     }
+    dropUnreadReceiver(fnCtx, prologue, receiver);
     body = [...prologue, ...body];
     // Bare-expression bodies never pass through lowerStmts, so the
     // lib-boundary chokepoint runs here (idempotent for block bodies,
@@ -624,12 +638,11 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     }
     const undefinedResult = undefinedResultParam(lowerer, decl, sig.params, false);
     const lowerBody = (): IrStmt[] => lowerer.lowerStmts(bodyBlock.statements.nodes);
-    const body = [
-      ...prologue,
-      ...(undefinedResult
-        ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
-        : lowerBody()),
-    ];
+    const statements = undefinedResult
+      ? lowerUndefinedResultBody(lowerer, decl, undefinedResult, lowerBody)
+      : lowerBody();
+    dropUnreadReceiver(ctx, prologue, receiver);
+    const body = [...prologue, ...statements];
     appendImplicitUndefinedReturn(lowerer, body, bodyReturn, locOf(decl));
     const fn: IrFunction = {
       name: sig.name,

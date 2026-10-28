@@ -93,6 +93,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_perf_loop.c", "perfLoop"],
   // Module namespace objects as checked-dynamic values.
   ["scr_module_namespace.c", "moduleNamespace"],
+  // The same namespace as the frozen null-prototype object typed code sees.
+  ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
@@ -195,6 +197,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // over the SCR_NODE_ISLANDS build of scr_async.c.
   ["scr_node_island.c", "nodeIsland"],
   ["scr_node_island_handle.c", "nodeIsland"],
+  ["scr_node_island_export.c", "nodeIsland"],
+  ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 

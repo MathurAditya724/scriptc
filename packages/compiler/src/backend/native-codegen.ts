@@ -425,8 +425,13 @@ export async function emitNativeArtifact(
     );
   }
   const helper = await resolveHelper(target, options.resolvePackageJson, options.helperHost);
+  // A build that records block counts runs the helper on every partition.
   const root = await prepareBuildCacheRoot(
-    options.cacheRoot === undefined ? buildCacheRoot() : options.cacheRoot,
+    options.profile?.recordBlocks !== undefined
+      ? null
+      : options.cacheRoot === undefined
+        ? buildCacheRoot()
+        : options.cacheRoot,
   );
   const key = cacheKey(options, target, helper.identity);
   const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
@@ -556,6 +561,7 @@ function helperProfileMatch(match: NativeProfileMatch): Record<string, number> {
     annotated: match.annotated,
     mismatched: match.mismatched,
     missing: match.missing,
+    recovered: match.recovered,
     unknown_partitions: match.unknownPartitions,
   };
 }
@@ -573,6 +579,7 @@ async function cachedProfileMatch(
       annotated: 0,
       mismatched: 0,
       missing: 0,
+      recovered: 0,
       unknownPartitions: partitions,
     }
   );
