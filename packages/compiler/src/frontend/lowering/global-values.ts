@@ -16,6 +16,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BYTES_ELEMENT_NAME,
   DYN,
+  F64,
   STRING,
   UNDEFINED_T,
   type IrExpr,
@@ -133,6 +134,8 @@ export function jsGlobalValueByName(lowerer: Lowerer, name: string, loc: SrcLoc)
 /** jsGlobalValueByName for the globals other than the interned builtin
  * functions and constructors (builtinGlobalValue). */
 export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+  if (name === "NaN" || name === "Infinity")
+    return { kind: "numLit", value: name === "NaN" ? NaN : Infinity, type: F64, loc };
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
     return primitiveCtorClosure(lowerer, name, loc, true);
   if (name === "ArrayBuffer")
