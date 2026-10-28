@@ -4096,6 +4096,10 @@ export class Lowerer {
       setTable("freezableArrays", this.freezableArrays),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
+      // The shared-module plan runs inside the first unit that lowers a
+      // module; a warning it adds is a diagnostic of that unit, so its count
+      // is journaled like `diags` (the plan itself is unjournaled).
+      checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -4370,6 +4374,11 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // The modules shared with the islands (NI-6): a pure function of the
+    // program's modules, computed once, and the TDZ flags its plan gives a
+    // statement.
+    "sharedModules",
+    "sharedInitFlags",
     "slotOriginMemo",
     "recordOriginMemo",
     "boundaryCastOrder",
