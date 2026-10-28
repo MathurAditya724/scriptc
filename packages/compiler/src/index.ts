@@ -113,7 +113,9 @@ import {
   nativeProfileKey,
   nativeProfileLayout,
   nativeProfileRefusal,
+  profileBlocksPath,
   profileHasContextCounts,
+  recordProfileBlocksPath,
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./backend/native-profile.js";
@@ -825,8 +827,8 @@ async function removeNativeProgramObject(
   );
 }
 
-/** The request's profile. An indexed profile is read here so every cache keys
- * its bytes. */
+/** The request's profile. An indexed profile and the block-count file beside
+ * it are read here so every cache keys their bytes. */
 async function readNativeProfile(
   opts: CompileRequestOptions,
 ): Promise<NativeProfileOptions | undefined> {
@@ -841,12 +843,27 @@ async function readNativeProfile(
       `cannot read --profile-use file ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  const blocksPath = profileBlocksPath(path);
+  const blockBytes = existsSync(blocksPath) ? await readFile(blocksPath) : null;
   const use = {
     path,
     digest: createHash("sha256").update(bytes).digest("hex"),
     contextSensitive: profileHasContextCounts(bytes),
+    ...(blockBytes === null
+      ? {}
+      : {
+          blocks: {
+            path: blocksPath,
+            digest: createHash("sha256").update(blockBytes).digest("hex"),
+          },
+        }),
   };
-  return generate === undefined ? { use } : { generate, use };
+  const recordBlocks = recordProfileBlocksPath(process.env);
+  return {
+    ...(generate === undefined ? {} : { generate }),
+    use,
+    ...(recordBlocks === undefined ? {} : { recordBlocks: resolve(recordBlocks) }),
+  };
 }
 
 /** The digest of the request's function layout file, which keys the
@@ -1772,8 +1789,9 @@ async function compileTracked(
       sourceTexts: new Map(),
     };
   }
+  // A build that records block counts reuses no cached executable.
   const cacheRoot =
-    outputKind === "exe" && provenanceSources() === null
+    outputKind === "exe" && provenanceSources() === null && profile?.recordBlocks === undefined
       ? await prepareBuildCacheRoot(buildCacheRoot())
       : null;
   configureLibDiagnostics(cacheRoot);
