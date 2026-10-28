@@ -164,10 +164,13 @@ export function lowerUnionFieldRead(
  * aliases and identity-keyed collections observe the mutation. Arms may
  * declare the field with different types when one of them converts into
  * every other without a check (`T` beside `T | undefined`, a subclass
- * beside its base), or when every arm's slot holds a dyn-convertible type
- * (`T | undefined` beside `unknown`) and the value is converted per arm.
- * Accessors, missing fields, and unrelated storage types retain their own
- * fences. */
+ * beside its base), or when one arm declares the field `unknown`/`any`
+ * beside specific arms (`T | undefined` beside `unknown`) and the value is
+ * converted per arm. A union of unrelated static storage types (a
+ * `string` arm beside a `number` arm) keeps its refusal: there is no
+ * dynamic arm to make the write meaningful, and the read path refuses the
+ * same shape. Accessors, missing fields, and unrelated storage types retain
+ * their own fences. */
 export function lowerUnionFieldWrite(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -211,18 +214,21 @@ export function lowerUnionFieldWrite(
   }
   if (
     fieldType === null &&
-    (!mixed || !present.every((field) => lowerer.dynConvertible(field.type)))
+    (!mixed ||
+      !present.some((field) => field.type.kind === "dyn") ||
+      !present.every((field) => lowerer.dynConvertible(field.type)))
   )
     return null;
   const object = lowerer.declareHiddenLocal("%unionWriteObject", receiver.type);
   const objectRef = varRef(object.id, object.type, loc);
-  // No static supertype of the arm types (`T | undefined` beside `unknown`):
-  // TypeScript's writable property type is the UNION of the arms' property
-  // types, so the value is lowered once at its own type and each arm converts
-  // it. Those conversions are checked where the arm's slot is narrower, so a
-  // value that does not fit the selected arm throws the catchable TypeError
-  // of the dyn→static edge where JS would store it (the divergence a dyn
-  // value written into a typed slot already documents).
+  // No static supertype of the arm types, with one arm's slot dynamic
+  // (`T | undefined` beside `unknown`): TypeScript's writable property type
+  // is the UNION of the arms' property types, so the value is lowered once
+  // at its own type and each arm converts it. Those conversions are checked
+  // where the arm's slot is narrower, so a value that does not fit the
+  // selected arm throws the catchable TypeError of the dyn→static edge
+  // where JS would store it (the divergence a dyn value written into a
+  // typed slot already documents).
   const value =
     fieldType === null ? lowerer.lowerExpr(rhs) : lowerer.lowerExprExpecting(rhs, fieldType);
   const stored = lowerer.declareHiddenLocal("%unionWriteValue", value.type);

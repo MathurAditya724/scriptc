@@ -2047,14 +2047,16 @@ export function lowerInExpression(
   // A null-prototype record (Object.groupBy) has no inherited names.
   const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
   if (nullProtoT) {
-    const answer: IrExpr = {
+    // The answer reads the receiver itself, so it already evaluates it
+    // exactly once; wrapping it in a discard statement would run an
+    // effectful receiver (a call result) twice.
+    return {
       kind: "unary",
       op: "!",
       operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
       type: BOOL,
       loc,
     };
-    return staticAnswerAfterWith(recv, answer, loc);
   }
   return staticAnswerAfter(recv, inherited, loc);
 }

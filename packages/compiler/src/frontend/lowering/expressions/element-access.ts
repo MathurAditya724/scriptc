@@ -80,7 +80,7 @@ import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
-import { isSafeToRepeat } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
@@ -1712,14 +1712,16 @@ function lowerFiniteKeyedRead(
   expr: ts.ElementAccessExpression,
 ): IrExpr {
   const stmts: IrStmt[] = [];
-  const settle = (value: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(value)) return value;
+  const settle = (value: IrExpr, name: string, force = false): IrExpr => {
+    if (!force && isSafeToRepeat(value)) return value;
     const temp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
     return varRef(temp.id, temp.type, loc);
   };
-  // JavaScript evaluates the receiver before the key.
-  const receiver = settle(obj, "%keyedReceiver");
+  // JavaScript evaluates the receiver before the key, and an effectful key
+  // (`record[key()]`) may reassign the binding the receiver names, so a
+  // non-discardable key forces the receiver into a hidden local first.
+  const receiver = settle(obj, "%keyedReceiver", !isSafeToDiscard(key));
   const stableKey = settle(key, "%keyedKey");
   let result: IrExpr = {
     kind: "unionWrap",
@@ -1840,13 +1842,17 @@ function lowerTupleIndexRead(
   // Both operands are read once per position: hold the ones that cannot be
   // repeated, receiver first (JavaScript evaluates it before the index).
   const stmts: IrStmt[] = [];
-  const settle = (value: IrExpr, name: string): IrExpr => {
-    if (isSafeToRepeat(value)) return value;
+  const settle = (value: IrExpr, name: string, force = false): IrExpr => {
+    if (!force && isSafeToRepeat(value)) return value;
     const temp = lowerer.declareHiddenLocal(name, value.type);
     stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
     return varRef(temp.id, temp.type, loc);
   };
-  const stableObj = settle(obj, "%tupleReceiver");
+  // A repeated read of the receiver is only equivalent when the index cannot
+  // change what it names: an effectful index (`arr[key()]`) may reassign the
+  // binding, so the receiver is held in a hidden local first, as JavaScript
+  // evaluates it before the key.
+  const stableObj = settle(obj, "%tupleReceiver", !isSafeToDiscard(index));
   const stableIndex = settle(index, "%tupleIndex");
   const readAt = (position: number): IrExpr => {
     const field = shape.fields[position]!;

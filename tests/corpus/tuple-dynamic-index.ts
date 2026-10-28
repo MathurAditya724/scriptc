@@ -85,3 +85,13 @@ function optAt(i: number): number | undefined {
   return opts[i];
 }
 console.log(optAt(0), optAt(1), optAt(2));
+
+// An index call that rebinds the receiver: JavaScript evaluates the receiver
+// before the index, so the read observes the tuple the binding held then.
+let active: Vec3 = [1, 2, 3];
+const replacement: Vec3 = [4, 5, 6];
+function swapKey(): number {
+  active = replacement;
+  return 1;
+}
+console.log(active[swapKey()], active[1], active[0]);

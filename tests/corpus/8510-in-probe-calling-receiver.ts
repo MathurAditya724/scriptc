@@ -31,3 +31,16 @@ console.log("collapsed-missing", "nope" in (same() as { one: A }));
 console.log("side", side.join(","));
 const obj = holder(false).api;
 console.log("var", "stream" in obj, side.length > 0);
+
+// An inherited Object.prototype key over an index-signature record whose
+// prototype is probed at runtime: the receiver is a call result, so it must
+// run exactly once even though the answer reads it.
+interface Bag {
+  [key: string]: number;
+}
+function bag(): Bag {
+  side.push("bag");
+  return { a: 1 };
+}
+console.log("inherited", "toString" in bag(), "constructor" in bag());
+console.log("side2", side.join(","));

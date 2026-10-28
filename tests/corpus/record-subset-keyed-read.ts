@@ -94,3 +94,13 @@ function headersOf(spec: Spec, key: "headers"): { [key: string]: string } | unde
 }
 const headers = headersOf({ headers: { a: "b" }, port: 1, name: "n" }, "headers");
 console.log(headers === undefined ? "missing" : headers["a"]);
+
+// A key call that rebinds the receiver: JavaScript evaluates the receiver
+// first, so the read observes the record the binding held before the key.
+let activeFilter: PackageFilter = { prompts: ["before"] };
+const replacementFilter: PackageFilter = { prompts: ["after"] };
+function rebindKey(): ResourceType {
+  activeFilter = replacementFilter;
+  return "prompts";
+}
+console.log(activeFilter[rebindKey()]?.join(","), activeFilter.prompts?.join(","));
