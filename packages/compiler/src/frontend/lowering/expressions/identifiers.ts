@@ -700,8 +700,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // String(NaN) is "NaN" in the number formatter; `NaN !== NaN` holds
   // because f64 compares are IEEE compares).
   if (expr.text === "Infinity" || expr.text === "NaN") {
-    const sym = lowerer.checker.getSymbolAtLocation(expr);
-    if (lowerer.isStdlibSymbol(sym)) {
+    if (lowerer.isStdlibGlobal(expr, expr.text)) {
       return { kind: "numLit", value: expr.text === "NaN" ? NaN : Infinity, type: F64, loc };
     }
   }
@@ -729,7 +728,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc };
   if (
     Object.values(BYTES_ELEMENT_NAME).includes(expr.text) &&
-    lowerer.isStdlibSymbol(lowerer.checker.getSymbolAtLocation(expr))
+    lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     return {
       kind: "libCall",
