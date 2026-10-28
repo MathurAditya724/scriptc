@@ -146,6 +146,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_dyn.c", "streamDyn"],
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
+  // ChildProcess listener removal (off/removeListener) and signalCode; a
+  // unit of its own so scr_child.c's layout stays put for every program.
+  ["scr_child_lifecycle.c", "childLifecycle"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.

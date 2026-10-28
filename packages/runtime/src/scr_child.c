@@ -1368,21 +1368,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
  * fallback). Listener ordering, settle discipline, unref/teardown, and
  * the unhandled-'error' exit are copied unchanged. */
 
-typedef enum {
-  SCR_CHILD_RUNNING = 0,
-  SCR_CHILD_EXITED = 1,
-  SCR_CHILD_SPAWN_FAILED = 2
-} ScrChildState;
-
-typedef struct {
-  ScrClosure *cb;
-  ScrChildExitFn fn;
-} ScrChildExitEntry;
-
-typedef struct {
-  ScrClosure *cb;
-  ScrChildErrFn fn;
-} ScrChildErrEntry;
+#include "scr_child_private.h"
 
 typedef struct {
   ScrClosure *cb; /* owned */
@@ -1457,48 +1443,6 @@ static SCR_TL ScrChildWriter *scr_child_writers = NULL;
 static bool scr_child_writers_pending(void);
 static void scr_child_writers_service(void);
 static void scr_child_writer_child_settled(ScrChildWriter *w);
-
-struct ScrChild {
-  size_t rc;
-  HANDLE proc; /* NULL after the reap (or spawn failure) */
-  DWORD pid;
-  ScrChildState state;
-  bool settled;
-  bool close_done;
-  bool spawn_done;
-  ScrClosure **spawn_cbs;
-  size_t n_spawn, cap_spawn;
-  bool has_code;
-  bool killed;
-  bool reffed;
-  int spawn_uv_errno;       /* spawn failure: Node's exitCode (negative) */
-  const char *spawn_errname; /* spawn failure: the `code` stamp */
-  double code;
-  const char *exit_signal; /* we killed it: the signal's name (static) */
-  const char *kill_signal; /* recorded when kill() terminates the child */
-  ScrStr *err_msg;         /* spawn failure only: "spawn <cmd> <ERRNAME>" */
-  ScrChildExitEntry *exit_cbs;
-  size_t n_exit, cap_exit;
-  ScrChildExitEntry *close_cbs;
-  size_t n_close, cap_close;
-  ScrChildErrEntry *err_cbs;
-  size_t n_err, cap_err;
-  ScrClosure *exec_cb;
-  ScrExecFileFn exec_fn;
-  ScrStr *exec_display;
-  ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
-  ScrArr *exec_args; /* a spawn failure's path and spawnargs */
-  void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
-  ScrChildStream *out_stream;
-  ScrChildStream *err_stream;
-  ScrChildWriter *in_stream;
-  ScrDyn *out_dyn, *err_dyn, *in_dyn;
-  ScrIpc *ipc;
-  /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
-   * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
-  ScrAlsCtx *als;
-  struct ScrChild *next; /* the pending registry */
-};
 
 static SCR_TL ScrChild *scr_children = NULL;
 static SCR_TL ScrChild *scr_children_closing = NULL;
@@ -2561,15 +2505,6 @@ double scr_child_exit_code(ScrChild *c) {
   return c->code;
 }
 
-/* child.signalCode — the signal that terminated the child (Node answers
- * null for a normal exit, while the child runs, and after a spawn
- * failure). The name is the runtime's static signal spelling retained
- * into a fresh +1 ScrStr. */
-bool scr_child_has_signal_code(ScrChild *c) { return c->exit_signal != NULL; }
-ScrStr *scr_child_signal_code(ScrChild *c) {
-  return scr_str_new(c->exit_signal, strlen(c->exit_signal));
-}
-
 bool scr_child_killed(ScrChild *c) { return c->killed; }
 
 /* child.kill core: libuv's uv_kill emulation. SIGTERM/SIGKILL/SIGINT/
@@ -2706,52 +2641,6 @@ void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn)
   c->err_cbs[c->n_err].cb = cb;
   c->err_cbs[c->n_err].fn = fn;
   c->n_err++;
-}
-
-/* child.off()/removeListener(): remove the most recently registered
- * listener that IS this closure (EventEmitter's identity semantics). The
- * argument is BORROWED — compared, never retained; a value the registry
- * does not hold (a fresh inline arrow, an adapter closure) removes
- * nothing, exactly Node's answer. Removing does not change what the loop
- * watches: a child with no listeners is still reaped. */
-void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_spawn; i > 0; i--) {
-    if (c->spawn_cbs[i - 1] != cb) continue;
-    scr_closure_release(c->spawn_cbs[i - 1]);
-    memmove(c->spawn_cbs + i - 1, c->spawn_cbs + i, (c->n_spawn - i) * sizeof *c->spawn_cbs);
-    c->n_spawn--;
-    return;
-  }
-}
-
-void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_exit; i > 0; i--) {
-    if (c->exit_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->exit_cbs[i - 1].cb);
-    memmove(c->exit_cbs + i - 1, c->exit_cbs + i, (c->n_exit - i) * sizeof *c->exit_cbs);
-    c->n_exit--;
-    return;
-  }
-}
-
-void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_close; i > 0; i--) {
-    if (c->close_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->close_cbs[i - 1].cb);
-    memmove(c->close_cbs + i - 1, c->close_cbs + i, (c->n_close - i) * sizeof *c->close_cbs);
-    c->n_close--;
-    return;
-  }
-}
-
-void scr_child_off_error(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_err; i > 0; i--) {
-    if (c->err_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->err_cbs[i - 1].cb);
-    memmove(c->err_cbs + i - 1, c->err_cbs + i, (c->n_err - i) * sizeof *c->err_cbs);
-    c->n_err--;
-    return;
-  }
 }
 
 /* ── the runtime-provided listener adapters (the POSIX arm's) ────────── */
@@ -3946,21 +3835,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
  * registered after settling is released immediately and never fires
  * (Node: listeners added after 'exit' emitted don't fire). */
 
-typedef enum {
-  SCR_CHILD_RUNNING = 0,
-  SCR_CHILD_EXITED = 1,      /* reaped; has_code/code valid */
-  SCR_CHILD_SPAWN_FAILED = 2 /* err_msg valid */
-} ScrChildState;
-
-typedef struct {
-  ScrClosure *cb;
-  ScrChildExitFn fn;
-} ScrChildExitEntry;
-
-typedef struct {
-  ScrClosure *cb;
-  ScrChildErrFn fn;
-} ScrChildErrEntry;
+#include "scr_child_private.h"
 
 /* ── piped child output (child.stdout / child.stderr) ────────────────────
  *
@@ -4068,50 +3943,6 @@ static SCR_TL ScrChildWriter *scr_child_writers = NULL;
 static bool scr_child_writers_pending(void);
 static void scr_child_writers_service(void);
 static void scr_child_writer_child_settled(ScrChildWriter *w);
-
-struct ScrChild {
-  size_t rc;
-  pid_t pid;
-  ScrChildState state;
-  bool settled;   /* terminal event delivered; listeners released */
-  bool close_done;
-  bool spawn_done;
-  ScrClosure **spawn_cbs;
-  size_t n_spawn, cap_spawn;
-  bool unwatched; /* no kqueue NOTE_EXIT armed: the loop must poll for it */
-  bool has_code;
-  bool killed;    /* a kill() successfully sent a signal (Node's flag) */
-  bool reffed;    /* keeps the loop alive; unref() clears it (Node) */
-  int spawn_errno; /* spawn failure only: Node's exitCode is -errno there */
-  double code;
-  /* Signal death only: the terminating signal's name (static storage) —
-   * Node's second exit-listener parameter. NULL for a normal exit. */
-  const char *exit_signal;
-  ScrStr *err_msg; /* spawn failure only: "spawn <cmd> <ERRNAME>" */
-  ScrChildExitEntry *exit_cbs;
-  size_t n_exit, cap_exit;
-  ScrChildExitEntry *close_cbs;
-  size_t n_close, cap_close;
-  ScrChildErrEntry *err_cbs;
-  size_t n_err, cap_err;
-  ScrClosure *exec_cb;
-  ScrExecFileFn exec_fn;
-  ScrStr *exec_display;
-  ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
-  ScrArr *exec_args; /* a spawn failure's path and spawnargs */
-  void (*exec_props)(struct ScrChild *c, ScrError *error); /* Node's error properties */
-  /* Piped stdio (stdio mode 3): the stream handles child.stdout /
-   * child.stderr answer — owned (+1 each), NULL when not piped. */
-  ScrChildStream *out_stream;
-  ScrChildStream *err_stream;
-  ScrChildWriter *in_stream;
-  ScrDyn *out_dyn, *err_dyn, *in_dyn;
-  ScrIpc *ipc;
-  /* The AsyncLocalStorage context of the spawn() call (+1, NULL outside
-   * a store): 'spawn', 'error', 'exit' and 'close' run in it. */
-  ScrAlsCtx *als;
-  struct ScrChild *next; /* the pending registry */
-};
 
 static SCR_TL ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
 static SCR_TL ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
@@ -5490,15 +5321,6 @@ double scr_child_exit_code(ScrChild *c) {
   return c->code;
 }
 
-/* child.signalCode — the signal that terminated the child (Node answers
- * null for a normal exit, while the child runs, and after a spawn
- * failure). The name is the runtime's static signal spelling retained
- * into a fresh +1 ScrStr. */
-bool scr_child_has_signal_code(ScrChild *c) { return c->exit_signal != NULL; }
-ScrStr *scr_child_signal_code(ScrChild *c) {
-  return scr_str_new(c->exit_signal, strlen(c->exit_signal));
-}
-
 bool scr_child_killed(ScrChild *c) { return c->killed; }
 
 /* child.kill core, numeric signal already resolved: kill(2) while the
@@ -5667,52 +5489,6 @@ void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn)
   c->err_cbs[c->n_err].cb = cb;
   c->err_cbs[c->n_err].fn = fn;
   c->n_err++;
-}
-
-/* child.off()/removeListener(): remove the most recently registered
- * listener that IS this closure (EventEmitter's identity semantics). The
- * argument is BORROWED — compared, never retained; a value the registry
- * does not hold (a fresh inline arrow, an adapter closure) removes
- * nothing, exactly Node's answer. Removing does not change what the loop
- * watches: a child with no listeners is still reaped. */
-void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_spawn; i > 0; i--) {
-    if (c->spawn_cbs[i - 1] != cb) continue;
-    scr_closure_release(c->spawn_cbs[i - 1]);
-    memmove(c->spawn_cbs + i - 1, c->spawn_cbs + i, (c->n_spawn - i) * sizeof *c->spawn_cbs);
-    c->n_spawn--;
-    return;
-  }
-}
-
-void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_exit; i > 0; i--) {
-    if (c->exit_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->exit_cbs[i - 1].cb);
-    memmove(c->exit_cbs + i - 1, c->exit_cbs + i, (c->n_exit - i) * sizeof *c->exit_cbs);
-    c->n_exit--;
-    return;
-  }
-}
-
-void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_close; i > 0; i--) {
-    if (c->close_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->close_cbs[i - 1].cb);
-    memmove(c->close_cbs + i - 1, c->close_cbs + i, (c->n_close - i) * sizeof *c->close_cbs);
-    c->n_close--;
-    return;
-  }
-}
-
-void scr_child_off_error(ScrChild *c, ScrClosure *cb) {
-  for (size_t i = c->n_err; i > 0; i--) {
-    if (c->err_cbs[i - 1].cb != cb) continue;
-    scr_closure_release(c->err_cbs[i - 1].cb);
-    memmove(c->err_cbs + i - 1, c->err_cbs + i, (c->n_err - i) * sizeof *c->err_cbs);
-    c->n_err--;
-    return;
-  }
 }
 
 /* ── the runtime-provided listener adapters ──────────────────────────── */
