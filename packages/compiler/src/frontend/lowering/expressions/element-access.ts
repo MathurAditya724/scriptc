@@ -66,6 +66,7 @@ import {
   lowerSafeIndexRead,
   primitiveElement,
   unionArrayValueRead,
+  unaffectedByIndex,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -2479,7 +2480,9 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   // A binding's `T | undefined` value is stored by two writes that both
   // read the index (arrayValueStore). A computed index, such as the key
   // conversion of a union index that declares a temporary, is held once
-  // ahead of them, after the receiver and before the value as in source order.
+  // ahead of them. The stores then read the receiver after the index, so
+  // an index that can rebind the receiver (`a[(a = b, 0)] = u`) keeps the
+  // stores as they are, reading the receiver first.
   if (
     stored.kind === "varRef" &&
     stored.type.kind === "union" &&
@@ -2487,7 +2490,8 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     !typeEquals(stored.type, arr.type.elem) &&
     arr.kind === "varRef" &&
     index.kind !== "varRef" &&
-    index.kind !== "numLit"
+    index.kind !== "numLit" &&
+    unaffectedByIndex(lowerer, arr, index)
   ) {
     const loc = locOf(expr);
     const held = lowerer.declareHiddenLocal("%arrayIndex", index.type);

@@ -179,3 +179,17 @@ function nested(grid: number[][]): number {
   return s;
 }
 console.log(nested([[1, 2], [3]]));
+
+// The index rebinds the receiver: the store goes to the array the receiver
+// held before the index ran, as for any element assignment.
+let target: number[] = [1, 2, 3];
+const original = target;
+const other: number[] = [7, 8, 9];
+const keyed: number[] = [1];
+const missing = sparse[1];
+const kept = sparse[0];
+target[(target = other, keyed[0])] = missing;
+console.log(original, target === other, 1 in original, other);
+target = original;
+target[(target = other, keyed[0])] = kept;
+console.log(original, other);
