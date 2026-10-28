@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace llvm {
@@ -44,11 +45,16 @@ int emit(const EmitOptions &Options);
 
 // How a profile matched the functions of one optimized module: functions
 // that received its counts, functions whose control flow changed since it
-// was collected, and functions it has no record of.
+// was collected, and functions it has no record of. The annotated and the
+// mismatched functions are also listed by profile name, with the sum of the
+// profile's counters for each, so a changed hot function can weigh more than
+// a changed cold one.
 struct ModuleProfileMatch {
   uint64_t Annotated = 0;
   uint64_t Mismatched = 0;
   uint64_t Missing = 0;
+  std::vector<std::pair<std::string, uint64_t>> AnnotatedCounts;
+  std::vector<std::pair<std::string, uint64_t>> MismatchedCounts;
 };
 
 // Optimizes `M` with the per-module default pipeline at `OptLevel`, as `emit`

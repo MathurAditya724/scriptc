@@ -34,6 +34,7 @@
 #include "llvm/PassInfo.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PGOOptions.h"
@@ -285,7 +286,9 @@ struct ProfileMatch {
 // context's default handling.
 class ProfileMatchHandler : public DiagnosticHandler {
 public:
-  explicit ProfileMatchHandler(ProfileMatch &Match) : Match(Match) {}
+  explicit ProfileMatchHandler(
+      ProfileMatch &Match, std::vector<std::string> *MismatchedNames = nullptr)
+      : Match(Match), MismatchedNames(MismatchedNames) {}
 
   bool handleDiagnostics(const DiagnosticInfo &Info) override {
     if (Info.getKind() != DK_PGOProfile)
@@ -294,9 +297,14 @@ public:
     raw_string_ostream Stream(Message);
     DiagnosticPrinterRawOStream Printer(Stream);
     Info.print(Printer);
-    if (StringRef(Message).contains("hash mismatch"))
+    if (StringRef(Message).contains("hash mismatch")) {
       ++Match.Mismatched;
-    else if (StringRef(Message).contains_insensitive("no profile data"))
+      // "...(hash mismatch) <function> Hash = <hash>"
+      if (MismatchedNames != nullptr) {
+        StringRef Name = StringRef(Message).split("(hash mismatch) ").second;
+        MismatchedNames->push_back(Name.split(" Hash = ").first.str());
+      }
+    } else if (StringRef(Message).contains_insensitive("no profile data"))
       ++Match.Missing;
     else
       return false;
@@ -305,6 +313,7 @@ public:
 
 private:
   ProfileMatch &Match;
+  std::vector<std::string> *MismatchedNames;
 };
 
 // The annotation warns about functions the profile does not describe only
@@ -401,6 +410,22 @@ struct Pipeline {
             return;
           if (const auto *M = llvm::any_cast<const Module *>(&IR))
             Count += annotatedFunctions(**M);
+        });
+  }
+
+  // Adds to Names the profile names of the functions the annotation gave
+  // counts to, as soon as that pass has run.
+  void collectAnnotated(std::vector<std::string> &Names) {
+    Callbacks.registerAfterPassCallback(
+        [&Names](StringRef PassID, Any IR, const PreservedAnalyses &) {
+          if (PassID != "PGOInstrumentationUse")
+            return;
+          if (const auto *M = llvm::any_cast<const Module *>(&IR))
+            for (const Function &F : **M) {
+              std::optional<Function::ProfileCount> Entry = F.getEntryCount();
+              if (!F.isDeclaration() && Entry && !Entry->isSynthetic())
+                Names.push_back(getIRPGOFuncName(F));
+            }
         });
   }
 };
@@ -1371,6 +1396,44 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   return Failure;
 }
 
+// Lists the annotated and the mismatched functions of one module in
+// `Result`, each with the sum of its counters in the profile. `ProfileNames`
+// maps the module's symbol names, which the mismatch warnings use, to
+// profile names.
+std::optional<std::string>
+weighProfileMatch(const std::string &ProfileUse,
+                  const StringMap<std::string> &ProfileNames,
+                  const std::vector<std::string> &AnnotatedNames,
+                  const std::vector<std::string> &MismatchedNames,
+                  ModuleProfileMatch &Result) {
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(ProfileUse, *vfs::getRealFileSystem());
+  if (!Reader)
+    return ProfileUse + ": " + toString(Reader.takeError());
+  StringMap<uint64_t> Counts;
+  for (const NamedInstrProfRecord &Record : **Reader) {
+    uint64_t Sum = 0;
+    for (uint64_t Count : Record.Counts)
+      Sum += Count;
+    Counts[Record.Name] += Sum;
+  }
+  if (Error E = (*Reader)->getError())
+    return ProfileUse + ": " + toString(std::move(E));
+  auto CountsOf = [&Counts](StringRef Name) -> uint64_t {
+    auto It = Counts.find(Name);
+    return It == Counts.end() ? 0 : It->second;
+  };
+  for (const std::string &Name : AnnotatedNames)
+    Result.AnnotatedCounts.emplace_back(Name, CountsOf(Name));
+  for (const std::string &Name : MismatchedNames) {
+    auto It = ProfileNames.find(Name);
+    std::string ProfileName = It == ProfileNames.end() ? Name : It->second;
+    uint64_t Sum = CountsOf(ProfileName);
+    Result.MismatchedCounts.emplace_back(std::move(ProfileName), Sum);
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
@@ -1393,18 +1456,34 @@ std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
   }
   bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
   ProfileMatch Match;
-  if (Annotating)
+  // The annotation reports a mismatched function by its symbol name; the
+  // profile names local functions after their source file.
+  StringMap<std::string> ProfileNames;
+  std::vector<std::string> MismatchedNames;
+  std::vector<std::string> AnnotatedNames;
+  if (Annotating) {
+    for (const Function &F : M)
+      if (!F.isDeclaration())
+        ProfileNames[F.getName()] = getIRPGOFuncName(F);
     M.getContext().setDiagnosticHandler(
-        std::make_unique<ProfileMatchHandler>(Match));
+        std::make_unique<ProfileMatchHandler>(Match, &MismatchedNames));
+  }
   {
     Pipeline P(Machine, Level, std::move(Profile));
-    if (Annotating)
+    if (Annotating) {
       P.countAnnotated(Match.Annotated);
+      P.collectAnnotated(AnnotatedNames);
+    }
     P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   }
   Result.Annotated = Match.Annotated.load();
   Result.Mismatched = Match.Mismatched.load();
   Result.Missing = Match.Missing.load();
+  if (Annotating) {
+    if (std::optional<std::string> Failure = weighProfileMatch(
+            ProfileUse, ProfileNames, AnnotatedNames, MismatchedNames, Result))
+      return Failure;
+  }
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure->Message;
