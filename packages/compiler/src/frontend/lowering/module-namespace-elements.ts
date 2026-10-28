@@ -186,12 +186,16 @@ function moduleNamespaceGetter(
   if (!source) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(source);
   if (!symbol) return null;
-  const exports: { key: string; declaration: ts.Node | undefined }[] = [];
+  const exports: { key: string; declaration: ts.Node | undefined; symbol: ts.Symbol }[] = [];
   for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
     if (!(target.flags & ts.SymbolFlags.Value)) continue;
-    exports.push({ key: ts.symbolName(exported), declaration: target.valueDeclaration });
+    exports.push({
+      key: ts.symbolName(exported),
+      declaration: target.valueDeclaration,
+      symbol: target,
+    });
   }
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.namespace:${ns.type.moduleId}`;
@@ -203,24 +207,37 @@ function moduleNamespaceGetter(
     lowerer.fnStack.push(context);
     try {
       const body: IrStmt[] = [];
-      for (const { key, declaration } of exports) {
+      for (const { key, declaration, symbol: exportSymbol } of exports) {
         const node = declaration ?? source;
         const diagsBefore = lowerer.diags.length;
         let read: IrStmt[];
         try {
           const identifier = declaration?.name as ts.Node | undefined;
-          if (!identifier || !ts.isIdentifier(identifier)) {
-            lowerer.unsupported(
-              "SC1090",
-              node,
-              `reading the unnamed export '${key}' through a module namespace object`,
-            );
+          let value: IrExpr;
+          if (identifier && ts.isIdentifier(identifier)) {
+            value = lowerer.lowerExprExpecting(identifier, DYN);
+          } else {
+            // `export default <expression>` and the anonymous default
+            // class/function have no named binding to read. The module's
+            // pre-registered default global holds the value the export
+            // statement snapshotted — the same storage a default import
+            // reads — so the namespace property answers it instead of
+            // fencing. A default whose type has no checked-dynamic form
+            // still fails the coercion below and keeps its fence.
+            const storage = lowerer.globalsBySymbol.get(exportSymbol);
+            if (!storage) {
+              lowerer.unsupported(
+                "SC1090",
+                node,
+                `reading the unnamed export '${key}' through a module namespace object`,
+              );
+            }
+            value = lowerer.coerceToExpected(varRef(storage.id, storage.type, loc), DYN);
           }
-          const value = lowerer.lowerExprExpecting(identifier, DYN);
           if (value.type.kind !== "dyn") {
             lowerer.unsupported(
               "SC1101",
-              identifier,
+              identifier ?? node,
               `reading the export '${key}' ('${lowerer.fmt(value.type)}') through a module namespace object`,
             );
           }

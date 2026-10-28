@@ -4,6 +4,7 @@
 // convert object to primitive value" coercion, plus `Promise<namespace>`
 // widening into `Promise<unknown>` and `unknown`.
 import * as declared from "./mod.ts";
+import * as expressionDefault from "./mod-default.ts";
 
 function keys(value: unknown): string {
   return Object.keys(value as any).join(",");
@@ -56,6 +57,12 @@ function bump(value: unknown): void {
 }
 
 async function main(): Promise<void> {
+  // An expression default is snapshotted once by the export statement;
+  // the boxed namespace's `default` read answers that value, like Node.
+  const boxedDefault: unknown = expressionDefault;
+  const dynDefault = boxedDefault as any;
+  console.log("expression default", dynDefault.default, typeof dynDefault.default);
+  console.log("expression keys", keys(boxedDefault), expressionDefault.default);
   describe(declared);
   bump(declared);
   const loaded = await import("./mod.ts");
