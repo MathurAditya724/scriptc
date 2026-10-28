@@ -32,7 +32,9 @@
  *   of the parameter by dyn consumers box more often than its callers do;
  * - a dyn local becomes a jsval local when the boxing it saves on writes
  *   of operator results outweighs the boxing its reads by dyn consumers add
- *   (loop depth weights both).
+ *   (loop depth weights both);
+ * - a dyn module global becomes a jsval global by the same measure, summed
+ *   over every function, when only dynamic-tier functions reference it.
  *
  * The rewrite changes representation only: every js builtin implements its
  * dyn twin's JS semantics, including ToPrimitive order and error messages
@@ -116,10 +118,12 @@ export function promoteJsvals(mod: IrModule): number {
   const storesJs = (e: IrExpr): boolean =>
     e.kind === "call" && sites.site(e.callee)?.kind === "set";
   const params = jsvalParams(mod, direct, results, storesJs);
+  const globals = promotableGlobals(mod, results, params, storesJs);
   let count = 0;
   for (const fn of mod.functions)
-    if (jsvalEligible(fn) && promoteFunction(fn, results, params, storesJs)) count++;
+    if (jsvalEligible(fn) && promoteFunction(fn, results, params, storesJs, globals)) count++;
   for (const fn of mod.functions) if (results.has(fn.name)) fn.returnType = JSVAL;
+  for (const global of mod.globals ?? []) if (globals.has(global.id)) global.type = JSVAL;
   return count;
 }
 
@@ -273,6 +277,22 @@ function promotableLocals(
   credits: ReadonlyMap<string, number> = new Map(),
   jsParams: ReadonlyMap<string, readonly boolean[]> = new Map(),
 ): Set<string> {
+  const candidates = localCandidates(fn, credits);
+  if (candidates.size === 0) return new Set();
+  const blocked = new Set<string>();
+  scanBindingCosts(fn, candidates, blocked, producer, jsResult, storesJs, jsParams);
+  const promoted = new Set<string>();
+  for (const [id, cost] of candidates)
+    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
+  return promoted;
+}
+
+/** The dyn locals of a function that may become jsval locals, parameters
+ * with their credit. */
+function localCandidates(
+  fn: IrFunction,
+  credits: ReadonlyMap<string, number>,
+): Map<string, LocalCost> {
   const candidates = new Map<string, LocalCost>();
   for (const local of fn.locals) {
     if (local.type.kind === "dyn" && local.boxed === undefined && local.tdz === undefined)
@@ -286,8 +306,69 @@ function promotableLocals(
   }
   for (const c of fn.captures ?? []) candidates.delete(c.localId);
   for (const c of fn.classCaptures ?? []) candidates.delete(c.localId);
+  return candidates;
+}
+
+/** The dyn module globals that become jsval globals: those that only
+ * dynamic-tier functions reference, by reads and plain writes, and whose
+ * saved boxing outweighs the added boxing summed over every function, the
+ * same measure as for locals. Libraries keep every global (the host reads
+ * exported bindings), and so do bindings with a temporal dead zone. */
+function promotableGlobals(
+  mod: IrModule,
+  results: ReadonlySet<string>,
+  jsParams: ReadonlyMap<string, readonly boolean[]>,
+  storesJs: (e: IrExpr) => boolean,
+): Set<string> {
+  const candidates = new Map<string, LocalCost>();
+  if (mod.lib !== undefined) return new Set();
+  for (const global of mod.globals ?? [])
+    if (global.type.kind === "dyn" && global.tdz === undefined && global.initFlag === undefined)
+      candidates.set(global.id, { saved: 0, added: 0 });
   if (candidates.size === 0) return new Set();
   const blocked = new Set<string>();
+  const producer = (e: IrExpr): boolean =>
+    isProducerCall(e) || (e.kind === "call" && results.has(e.callee));
+  for (const fn of mod.functions) {
+    if (!jsvalEligible(fn)) {
+      // A static function reads and writes the binding as a cell (I1).
+      everyStmtList(fn.body, {
+        expr: (e) => {
+          if (
+            (e.kind === "varRef" || e.kind === "assignExpr" || e.kind === "incDec") &&
+            candidates.has(e.localId)
+          )
+            blocked.add(e.localId);
+          return true;
+        },
+        stmt: (st) => {
+          if ((st.kind === "assign" || st.kind === "forOf") && candidates.has(st.localId))
+            blocked.add(st.localId);
+          return true;
+        },
+      });
+      continue;
+    }
+    scanBindingCosts(fn, candidates, blocked, producer, results.has(fn.name), storesJs, jsParams);
+  }
+  const promoted = new Set<string>();
+  for (const [id, cost] of candidates)
+    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
+  return promoted;
+}
+
+/** Adds to `candidates` the boxing a jsval binding saves and adds in `fn`,
+ * and to `blocked` the candidates `fn` references other than by reads and
+ * plain writes. */
+function scanBindingCosts(
+  fn: IrFunction,
+  candidates: ReadonlyMap<string, LocalCost>,
+  blocked: Set<string>,
+  producer: (e: IrExpr) => boolean,
+  jsResult: boolean,
+  storesJs: (e: IrExpr) => boolean,
+  jsParams: ReadonlyMap<string, readonly boolean[]>,
+): void {
   const write = (id: string, value: IrExpr | null, weight: number): void => {
     const cost = candidates.get(id);
     if (cost === undefined) return;
@@ -431,10 +512,6 @@ function promotableLocals(
     }
   };
   for (const s of fn.body) stmt(s, 1);
-  const promoted = new Set<string>();
-  for (const [id, cost] of candidates)
-    if (!blocked.has(id) && cost.saved > cost.added) promoted.add(id);
-  return promoted;
 }
 
 /** A statement-level sequence whose result nothing reads. */
@@ -449,6 +526,7 @@ function promoteFunction(
   results: ReadonlySet<string>,
   params: ReadonlyMap<string, readonly boolean[]>,
   storesJs: (e: IrExpr) => boolean,
+  globals: ReadonlySet<string>,
 ): boolean {
   const resultCall = (e: IrExpr): boolean => e.kind === "call" && results.has(e.callee);
   const operatorCall = (e: IrExpr): boolean => isProducerCall(e);
@@ -460,6 +538,7 @@ function promoteFunction(
     new Map(),
     params,
   );
+  for (const id of globals) promoted.add(id);
   const ownParams = params.get(fn.name);
   fn.params.forEach((p, i) => {
     if (ownParams?.[i] === true) promoted.add(p.localId);
