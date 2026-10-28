@@ -35,6 +35,13 @@ struct EmitOptions {
   std::string ProfileGenerate;
   // Indexed profile (.profdata) that guides optimization. Empty: none.
   std::string ProfileUse;
+  // With ProfileUse: block counts (profile-blocks.h) that annotate the
+  // functions whose control flow changed since the profile was collected.
+  // Empty: none.
+  std::string ProfileBlocks;
+  // With ProfileUse: writes the block counts of the functions the profile
+  // annotates to this path. Empty: none.
+  std::string RecordProfileBlocks;
   // With several outputs: optimize the module whole and divide only its code
   // generation among the outputs.
   bool SplitCodegen = false;
