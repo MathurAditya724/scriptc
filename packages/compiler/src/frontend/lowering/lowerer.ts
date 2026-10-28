@@ -3659,6 +3659,9 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
+   * stream class; undefined until asked. */
+  namesWebStreamClass: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
@@ -4275,6 +4278,7 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "namesWebStreamClass",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
