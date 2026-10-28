@@ -26,7 +26,11 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
-import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
+import {
+  lowerMaybePromiseAwait,
+  maybePromiseUnionOf,
+  promiseArmedUnionOf,
+} from "./maybe-promise.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import {
   BIGINT_T,
@@ -668,9 +672,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             loc,
           };
         }
-        if (inner.kind === "union" || inner.kind === "dyn") {
-          // A union inner would need an arm-wise re-tag into the result
-
+        if (inner.kind === "union") {
+          // A UNION inner (`Promise<A | B> | undefined`): the awaited
+          // result is the checker's own `Awaited` of the operand, which
+          // the maybe-promise lowering already produces — it awaits the
+          // narrowed promise arm and coerces its settled union, and the
+          // unit arms keep JS's one-microtask hop. Only the promise-or-
+          // unit shape reaches here, so the maybe-promise union is the
+          // same union with its only data arms being units.
+          const armed = promiseArmedUnionOf(lowerer, value.type);
+          if (armed) return lowerMaybePromiseAwait(lowerer, expr, value, armed, loc);
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `awaiting '${lowerer.fmt(value.type)}' (the promise's inner type has no combined result union — await the promise arm after narrowing instead)`,
+          );
+        }
+        if (inner.kind === "dyn") {
           lowerer.unsupported(
             "SC1090",
             expr,
