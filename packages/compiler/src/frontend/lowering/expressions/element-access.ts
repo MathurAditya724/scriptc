@@ -58,7 +58,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedProbeAccessOf,
+  assertedReceiverNode,
+  probeMemberName,
+} from "./asserted-receiver.js";
 import {
   arrayNumberRead,
   arrayValueRead,
@@ -91,6 +96,24 @@ import {
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
 
+/** The per-arm answer for a presence probe of an element read through an
+ * erased assertion (`typeof (u as R)["member"]`), or null when the read is
+ * a real use or has no per-arm answer (the assertion then extracts as
+ * usual). */
+function assertedProbeElementRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const assertion = assertedReceiverNode(expr.expression);
+  if (assertion === null || assertedProbeAccessOf(assertion) !== expr) return null;
+  const name = probeMemberName(expr);
+  if (name === null) return null;
+  const recv = tryLowerExpression(lowerer, expr.expression);
+  if (recv === null) return null;
+  return assertedMemberRead(lowerer, expr.expression, name, recv, locOf(expr));
+}
+
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
@@ -115,6 +138,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // tail short-circuits with the guard.
   if (!expr.questionDotToken && isOptionalChainTail(lowerer, expr)) {
     return lowerer.lowerOptionalChain(expr);
+  }
+  // A PRESENCE PROBE of a member read through an erased assertion in the
+  // bracket spelling (`typeof (u as R)["member"]`, `(u as R)["member"] !==
+  // undefined`): the dot spelling's twin. Node reads the member off the
+  // value actually stored, so the assertion's checked extraction must not
+  // run first — it would trap on the very arm the probe exists to detect.
+  // A real use keeps the extraction (lowerAsExpression only defers it for
+  // a probe).
+  {
+    const probe = assertedProbeElementRead(lowerer, expr);
+    if (probe) return probe;
   }
   // Enum accesses in element clothing — `E["A"]` forward reads and
   // `E[0]` reverse-mapping reads — fold to constants (lower-enums.ts),

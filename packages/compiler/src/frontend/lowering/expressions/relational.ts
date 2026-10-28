@@ -34,7 +34,7 @@ import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/we
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
-import { numLit, strLit, varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
@@ -1852,12 +1852,22 @@ export function lowerInExpression(
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean | "slot"; arm: IrType }[] = [];
+    const answers: { tag: number; has: boolean | "slot" | "unit" | "keyed"; arm: IrType }[] = [];
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
+      if (tag < 0) {
+        staticAnswers = false;
+        break;
+      }
+      // A unit arm answers Node's TypeError (`'k' in undefined`): only an
+      // erased assertion over an optional value still carries one.
+      if (isUnitType(arm)) {
+        answers.push({ tag, has: "unit", arm });
+        continue;
+      }
       const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
-      if (tag < 0 || !shape || shape.tuple || shape.indexValue) {
+      if (!shape || shape.tuple) {
         staticAnswers = false;
         break;
       }
@@ -1876,9 +1886,18 @@ export function lowerInExpression(
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
-      answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+      if (f !== undefined || acc || !shape.indexValue) {
+        answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+        continue;
+      }
+      // An index-signature arm answers the overflow map's own key (a
+      // stored undefined is present), or the prototype's name.
+      answers.push({ tag, has: "keyed", arm });
     }
-    if (staticAnswers && answers.some((a) => a.has === "slot")) {
+    if (
+      staticAnswers &&
+      answers.some((a) => a.has === "slot" || a.has === "unit" || a.has === "keyed")
+    ) {
       return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
     if (staticAnswers) {
@@ -2071,7 +2090,11 @@ function perValueUnionIn(
   recv: IrExpr,
   unionId: string,
   key: string,
-  answers: readonly { tag: number; has: boolean | "slot"; arm: IrType }[],
+  answers: readonly {
+    tag: number;
+    has: boolean | "slot" | "unit" | "keyed";
+    arm: IrType;
+  }[],
   loc: SrcLoc,
 ): IrExpr {
   const recvType = recv.type;
@@ -2087,8 +2110,9 @@ function perValueUnionIn(
     loc,
   });
   let out: IrExpr | null = null;
+  const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
   for (const a of answers) {
-    if (a.has === false) continue;
+    if (a.has === false || a.has === "unit") continue;
     let test = isTag(a.tag);
     if (a.has === "slot" && a.arm.kind === "record") {
       test = {
@@ -2114,9 +2138,68 @@ function perValueUnionIn(
         loc,
       };
     }
+    if (a.has === "keyed" && a.arm.kind === "record") {
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: a.tag,
+        value: ref(),
+        type: a.arm,
+        loc,
+      };
+      // An inherited name answers the prototype (a null-prototype record
+      // has none); any other key is an own key of the overflow map.
+      const nullProtoT = inherited ? nullProtoRecordShape(lowerer, a.arm) : null;
+      const presence: IrExpr = nullProtoT
+        ? {
+            kind: "unary",
+            op: "!",
+            operand: recordNullProtoTest(narrowed, a.arm.shapeId, loc),
+            type: BOOL,
+            loc,
+          }
+        : inherited
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "recordOvfHas",
+              obj: narrowed,
+              shapeId: a.arm.shapeId,
+              key: { kind: "strLit", value: key, type: STRING, loc },
+              type: BOOL,
+              loc,
+            };
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: presence,
+        type: BOOL,
+        loc,
+      };
+    }
     out = out ? { kind: "logical", op: "||", left: out, right: test, type: BOOL, loc } : test;
   }
-  const result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  let result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  // A unit arm throws Node's TypeError (`'k' in undefined`); the tests are
+  // disjoint by tag, so the order among them does not matter.
+  for (const a of answers) {
+    if (a.has !== "unit") continue;
+    const unit = a.arm.kind === "nullT" ? "null" : "undefined";
+    result = {
+      kind: "ternary",
+      cond: isTag(a.tag),
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot use 'in' operator to search for '${key}' in ${unit}`,
+        BOOL,
+        loc,
+      ),
+      else_: result,
+      type: BOOL,
+      loc,
+    };
+  }
   if (!stable) return result;
   return {
     kind: "seqExpr",

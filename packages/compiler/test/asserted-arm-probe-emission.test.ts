@@ -95,6 +95,25 @@ test("a real use of the asserted member keeps the checked extraction", async () 
   expect(bodies(compiled.module!, "call")).toMatch(/union\.narrow|nodeThrow/);
 });
 
+test("the bracket spelling of the probe reads per arm too", async () => {
+  const compiled = await compileToIr([
+    "function detect<K extends string>(input: Options<K>): boolean {",
+    '  return typeof (input.api as Streams)["stream"] === "function";',
+    "}",
+    "function absent<K extends string>(input: Options<K>): boolean {",
+    '  return (input.api as Streams)["fetch"] !== undefined;',
+    "}",
+    'console.log(detect({ name: "one", api: { stream: () => "one" } }));',
+    'console.log(absent({ name: "one", api: { stream: () => "one" } }));',
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  for (const fn of ["detect", "absent"]) {
+    const body = bodies(compiled.module!, fn);
+    expect(body).toContain('"unionIsTag"');
+    expect(body).not.toContain('"nodeThrow"');
+  }
+});
+
 test("a setter-only or getter-only arm answers its own read", async () => {
   const compiled = await compileToIr([
     "const setterArm = { tag: 's' as const, set stream(_v: () => string) {} };",
