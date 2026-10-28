@@ -194,9 +194,13 @@ function createRequireFence(
   surface: string,
   node: ts.Node,
   hint: string,
+  reason?: string,
 ): IrStmt & { kind: "runtimeFence" } {
   const loc = locOf(node);
   const d = noLoweringDiag(surface, loc, hint);
+  // The Node island reason the refusal would carry (a computed require is
+  // dynamic module loading), so island selection classifies the fence.
+  if (reason !== undefined) d.reason = reason;
   lowerer.runtimeFences.push(d);
   const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
   return {
@@ -299,6 +303,7 @@ function deferredCreateRequireThrow(
   surface: string,
   hint: string,
   loc: SrcLoc,
+  reason?: string,
 ): IrExpr {
   const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
     kind: "exprStmt",
@@ -310,7 +315,7 @@ function deferredCreateRequireThrow(
   slot.mutable = true;
   stmts.push(
     { kind: "varDecl", localId: slot.id, init: null, loc },
-    createRequireFence(lowerer, surface, call, hint),
+    createRequireFence(lowerer, surface, call, hint, reason),
   );
   return {
     kind: "seqExpr",
@@ -339,7 +344,7 @@ export function lowerCreateRequireCall(
     // Spread arguments have no run-time resolution: they run, then the
     // call throws the fence.
     if (args.some((a) => ts.isSpreadElement(a)))
-      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
+      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc, "dynamic-require");
     // Node evaluates every argument, then requires the first.
     const stmts: IrStmt[] = [];
     let id = args.length > 0 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
