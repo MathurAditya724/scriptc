@@ -3,6 +3,7 @@ import { globalMemberValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
@@ -784,6 +785,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // global, one token; what a token cannot do (be called, answer
   // typeof "function") meets per-site fences/divergences, and
   // SEMANTICS.md documents the stance.
+  {
+    const webStream = lowerWebStreamClassRead(lowerer, expr);
+    if (webStream) return webStream;
+  }
   if (stdlibGlobalNameOf(lowerer, expr) === "globalThis") {
     return lowerGlobalValue(lowerer, expr);
   }
