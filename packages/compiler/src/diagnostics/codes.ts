@@ -108,11 +108,13 @@ export const DIAGNOSTIC_CODES = {
   SC7007: "Acyclic type can lie on a reference cycle",
   SC7008: "ProgramLifetime class extends another class",
   SC7009: "InlineArray field contract not kept",
+  SC8001: "package or module runs in a Node island (note)",
   SC8002: "Node islands off for a package or module outside the native subset",
   SC8003: "package marked native is outside the native subset",
   SC8004: "unknown scriptc.packages or scriptc.nodeIslands configuration",
   SC8005: "no usable libnode pack for a program that calls into Node.js",
   SC8006: "Node island modules the build cannot collect",
+  SC8010: "value crossing a Node island boundary in a form without an exact copy",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",
@@ -150,8 +152,6 @@ export const RETIRED_DIAGNOSTIC_CODES = {
  * that work lands it moves its codes into DIAGNOSTIC_CODES; when it is
  * abandoned, delete them here. */
 export const RESERVED_DIAGNOSTIC_CODES = {
-  SC8001: "Node islands (ni/* branches)",
-  SC8010: "Node islands (ni/* branches)",
   SC8011: "Node islands (ni/* branches)",
   SC8012: "Node islands (ni/* branches)",
   SC8020: "Node islands (ni/* branches)",

@@ -2,6 +2,7 @@ import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
+import { lowerIslandExpr } from "./lower-node-island.js";
 import {
   allBytesArms,
   indexedUnionArms,
@@ -8032,6 +8033,11 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
 export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // Node islands (scope-B NI-4): writes and calls on island values.
+  if (lowerer.nodeIslands !== null) {
+    const island = lowerIslandExpr(lowerer, expr);
+    if (island !== null) return { kind: "exprStmt", expr: island, loc: locOf(expr) };
+  }
   // A discarded conditional has no value to merge: represent its lazy
   // branch selection directly as statement control flow. In particular,
   // both arms may be void calls (`flag ? emitA() : emitB()`), for which a

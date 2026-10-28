@@ -191,6 +191,36 @@ byPos.set(list.pos, list.items);
   }
 });
 
+test("arrays fields hold do not reach unchecked code inside other values", async () => {
+  for (const [use, where] of [
+    // Inside an array passed through a function value.
+    [
+      `const cb = (xs: Item[][]): void => {
+  xs[0]!.push(new Item(9));
+};
+const f: (xs: Item[][]) => void = Math.random() < 2 ? cb : () => {};
+f([new List(0, [new Item(1)]).items as Item[]]);`,
+      "a call through a function value",
+    ],
+    // In a field of a class instance that becomes a dynamic value.
+    [
+      `class Box {
+  readonly arr: readonly Item[];
+  constructor(arr: readonly Item[]) {
+    this.arr = arr;
+  }
+}
+const u: unknown = new Box(new List(0, [new Item(1)]).items);
+(u as { arr: Item[] }).arr.push(new Item(9));`,
+      "a dynamic value",
+    ],
+  ]) {
+    const result = await build(classes + use);
+    expect(result.ok, use).toBe(false);
+    expect(result.messages.join("\n"), use).toContain(`reaches ${where}`);
+  }
+});
+
 test("a write names the field read whose array it may reach", async () => {
   const result = await build(
     classes +
@@ -438,12 +468,7 @@ console.log(new List(2).items.length);
   expect(computed.messages.join("\n")).toContain("constructor parameter");
 });
 
-test.runIf(lowRegion)(
-  "an instance inside a dynamic value shows the field as an array",
-  async () => {
-    const { ok, llvm } = await build(
-      classes +
-        `
+const holder = `
 class Holder {
   readonly list: List;
   constructor(list: List) {
@@ -451,17 +476,36 @@ class Holder {
   }
 }
 const list = new List(3, [new Item(1), new Item(2)]);
-console.log(JSON.stringify({ list }), JSON.stringify(new Holder(list)));
-`,
+`;
+
+test("an instance inside a dynamic value is refused", async () => {
+  for (const use of [
+    "const u: unknown = new Holder(list);\n(u as { list: { items: Item[] } }).list.items.push(new Item(3));",
+    "const u: unknown = [{ list }];\nconsole.log(u);",
+    "const u: unknown = new Map([[1, new Holder(list)]]);\nconsole.log(u);",
+  ]) {
+    const result = await build(classes + holder + use);
+    expect(result.ok, use).toBe(false);
+    expect(result.messages.join("\n"), use).toContain(
+      "an instance, or a value that can hold one, becomes a dynamic value",
     );
-    expect(ok).toBe(true);
-    // The instance's dynamic view reads the field as an array of the elements.
-    const views = llvm
-      .split(/\n(?=define )/)
-      .filter((f) => f.startsWith("define") && f.includes("_materialize("));
-    expect(views.some((f) => f.includes("call ptr @scr_arr_view_cref("))).toBe(true);
-  },
-);
+    expect(result.messages.join("\n"), use).toContain("(at ");
+  }
+});
+
+test.runIf(lowRegion)("printing and JSON.stringify show the field as an array", async () => {
+  const { ok, llvm } = await build(
+    classes +
+      holder +
+      "console.log(JSON.stringify({ list }), JSON.stringify(new Holder(list)));\nconsole.log(new Holder(list));",
+  );
+  expect(ok).toBe(true);
+  // The instance's dynamic view reads the field as an array of the elements.
+  const views = llvm
+    .split(/\n(?=define )/)
+    .filter((f) => f.startsWith("define") && f.includes("_materialize("));
+  expect(views.some((f) => f.includes("call ptr @scr_arr_view_cref("))).toBe(true);
+});
 
 test("the constructor stores the array parameter and does nothing else with it", async () => {
   const result = await build(`

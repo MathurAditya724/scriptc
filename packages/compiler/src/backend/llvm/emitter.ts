@@ -516,6 +516,10 @@ export interface ForkPrimitives {
   exit(code: number): void;
   /** The worker's exit status, 128 plus a signal number, or -1. */
   wait(pid: number): number;
+  /** The pid of a child process that has ended, waiting for one if none
+   * has, or -1, without reaping it. Without it, workers are waited for in
+   * order. */
+  exited?(): number;
 }
 
 export interface LlvmTargetOptions {

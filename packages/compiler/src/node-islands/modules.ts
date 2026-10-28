@@ -5,18 +5,25 @@
  * Each `call`/`callSync` names its module with a string literal. The build
  * resolves it from the calling module as Node's require() does:
  * - a relative or absolute specifier names a module of the program: the
- *   module and every module its string-literal `require()`, `import` and
- *   `export ... from` reach are collected; a computed specifier in such a
- *   module is refused, since the build cannot know what it loads;
+ *   module and every module its string-literal `require()` (also through a
+ *   `createRequire()` function), `import` and `export ... from` reach are
+ *   collected; a computed specifier in such a module is refused, since the
+ *   build cannot know what it loads;
  * - a package specifier names a package: its whole directory is collected
  *   (computed requires inside packages keep working), and so are its
- *   `dependencies`, `optionalDependencies` and `peerDependencies`, found as
- *   Node finds them;
+ *   `dependencies`, `optionalDependencies` and `peerDependencies`, the
+ *   packages its "imports" map to and the packages its JavaScript names
+ *   with string literals, all found as Node finds them;
  * - a Node built-in module needs nothing, and neither does a module the
  *   build cannot find: loading it throws MODULE_NOT_FOUND when the call
  *   runs, as under Node.
+ * A load of a resolved file (`requireModule` and the compiler's own Node
+ * islands, lower-node-island.ts) collects the package that holds the file
+ * the same way, or, for a module of the program, the module and what it
+ * loads; the load then names the file by its path in the tree.
  * Paths keep their layout relative to one root directory (the deepest
- * directory that holds every collected path), with symbolic links between
+ * directory that holds every collected path, above any node_modules
+ * directory, where Node looks for packages), with symbolic links between
  * package directories (pnpm's layout) kept as links. Only these relative
  * paths enter the executable. Every read goes through the frontend input
  * tracker, so an edit to an island module invalidates cached builds. */
@@ -33,6 +40,7 @@ import {
   trackedRealpath,
 } from "../frontend/input-tracker.js";
 import type { IrNodeIslandModules } from "../ir/ir.js";
+import { packageDirOf } from "./origin.js";
 
 export type NodeIslandModuleTree = IrNodeIslandModules;
 type NodeIslandModuleFile = IrNodeIslandModules["files"][number];
@@ -45,6 +53,9 @@ const FILE_EXTENSIONS = [".js", ".json", ".node"];
 
 /** Module files whose imports are traced. */
 const TRACED = /\.(?:[cm]?js|[cm]?ts)$/;
+
+/** A package's JavaScript files, whose imports of other packages are followed. */
+const SCRIPT = /\.[cm]?js$/;
 
 function isBuiltin(specifier: string): boolean {
   return specifier.startsWith("node:") || BUILTINS.has(specifier);
@@ -138,6 +149,16 @@ function commonDirectory(paths: readonly string[]): string {
   return joined === "" ? sep : joined;
 }
 
+/** The string targets of a package.json "imports" map, through its
+ * conditions and fallback arrays. */
+function importTargets(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(importTargets);
+  if (value !== null && typeof value === "object")
+    return Object.values(value).flatMap(importTargets);
+  return [];
+}
+
 function portable(path: string): string {
   return sep === "/" ? path : path.split(sep).join("/");
 }
@@ -151,12 +172,27 @@ export class NodeIslandModuleCollector {
   private readonly traced = new Set<string>();
   /** Real paths of the calling modules. */
   private readonly callers = new Set<string>();
+  /** Real paths of the files loads name (addLoaded). */
+  private readonly loaded = new Set<string>();
 
   /** Collects the module `specifier` names from `caller` (a real path).
    * Returns null, or the reason the build cannot ship it. */
   add(caller: string, specifier: string): string | null {
     this.callers.add(caller);
     return this.resolveFrom(caller, specifier);
+  }
+
+  /** Collects the module a load names by its resolved path (a real path):
+   * the package that holds it, or a module of the program with what it
+   * loads. Returns null, or the reason the build cannot ship it. */
+  addLoaded(file: string): string | null {
+    this.loaded.add(file);
+    const at = packageDirOf(file);
+    if (at !== null) {
+      this.addPackage(at.dir);
+      return null;
+    }
+    return this.addModule(this.placed(file));
   }
 
   /** The collected tree, or null when no call loads a file. */
@@ -167,8 +203,14 @@ export class NodeIslandModuleCollector {
       ...this.links.keys(),
       ...this.links.values(),
       ...[...this.callers].map((caller) => dirname(caller)),
+      ...[...this.loaded].map((file) => dirname(file)),
     ];
-    const root = commonDirectory(anchors);
+    // Node finds a package through the node_modules directory that holds
+    // it, so a root inside one moves above it.
+    let root = commonDirectory(anchors);
+    const parts = root.split(sep);
+    const outer = parts.indexOf("node_modules");
+    if (outer >= 0) root = parts.slice(0, outer).join(sep) || sep;
     const files: NodeIslandModuleFile[] = [];
     for (const file of [...this.files].sort()) {
       const bytes = trackedReadBytes(file);
@@ -191,6 +233,12 @@ export class NodeIslandModuleCollector {
   /** The tree path a caller's module has: relative to the tree root. */
   static callerPath(tree: NodeIslandModuleTree | null, caller: string): string {
     return tree === null ? basename(caller) : portable(relative(tree.root, caller));
+  }
+
+  /** The name a load gives a collected file: `./` and its path relative to
+   * the tree root (the runtime resolves it under the root). */
+  static loadPath(tree: NodeIslandModuleTree | null, file: string): string {
+    return tree === null ? file : `./${portable(relative(tree.root, file))}`;
   }
 
   private resolveFrom(fromFile: string, specifier: string): string | null {
@@ -270,7 +318,21 @@ export class NodeIslandModuleCollector {
     const dir = this.placed(found);
     if (this.packages.has(dir)) return;
     this.packages.add(dir);
-    this.addDirectory(dir, new Set());
+    const scripts: string[] = [];
+    this.addDirectory(dir, new Set(), scripts);
+    // A package may load another it does not declare (one installed beside
+    // it): Node finds that one by walking up node_modules, and so does the
+    // build, from each string-literal specifier of the package's JavaScript.
+    for (const file of scripts) {
+      const text = trackedReadFile(file);
+      if (text === null) continue;
+      for (const specifier of scanModuleSpecifiers(text).specifiers) {
+        if (isBuiltin(specifier) || isPathSpecifier(specifier)) continue;
+        if (specifier.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) continue;
+        const other = packageDirectory(dirname(file), packageName(specifier));
+        if (other !== null) this.addPackage(other);
+      }
+    }
     const manifest = trackedReadFile(join(dir, "package.json"));
     if (manifest === null) return;
     let parsed: Record<string, unknown>;
@@ -285,6 +347,9 @@ export class NodeIslandModuleCollector {
       if (deps !== null && typeof deps === "object")
         for (const name of Object.keys(deps)) names.add(name);
     }
+    // A package import ("imports") may map to another package.
+    for (const target of importTargets(parsed["imports"]))
+      if (!isPathSpecifier(target) && !isBuiltin(target)) names.add(packageName(target));
     for (const name of [...names].sort()) {
       // A dependency that is not installed (optional, or a peer the program
       // does not use) is not loaded either.
@@ -294,17 +359,21 @@ export class NodeIslandModuleCollector {
   }
 
   /** Every file below `dir`, except nested node_modules (dependencies come
-   * through package.json) and .git. */
-  private addDirectory(dir: string, visited: Set<string>): void {
+   * through package.json and the package's imports) and .git; the
+   * JavaScript files among them also go to `scripts`. */
+  private addDirectory(dir: string, visited: Set<string>, scripts: string[]): void {
     const real = trackedRealpath(dir) ?? dir;
     if (visited.has(real)) return;
     visited.add(real);
     const entries = trackedAccessibleEntries(dir);
     if (entries === null) return;
-    for (const file of entries.files) this.files.add(join(dir, file));
+    for (const file of entries.files) {
+      this.files.add(join(dir, file));
+      if (SCRIPT.test(file)) scripts.push(join(dir, file));
+    }
     for (const sub of entries.directories) {
       if (sub === "node_modules" || sub === ".git") continue;
-      this.addDirectory(join(dir, sub), visited);
+      this.addDirectory(join(dir, sub), visited, scripts);
     }
   }
 }
@@ -490,8 +559,8 @@ export function moduleTokens(text: string): Token[] {
 }
 
 export interface ModuleSpecifierScan {
-  /** String-literal specifiers of require(), require.resolve(), import()
-   * and import/export declarations, in source order. */
+  /** String-literal specifiers of require(), require.resolve(), import(),
+   * import.meta.resolve() and import/export declarations, in source order. */
   specifiers: string[];
   /** Loads whose module the source does not name with a string literal. */
   computed: { at: number; form: string }[];
@@ -513,11 +582,27 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
       ? at(k + 1)!.value
       : null;
+  // `const r = createRequire(...)` declares a require function of the
+  // module: calls of `r` load modules as require() calls do.
+  const aliases = new Set<string>();
+  const declarations = new Set<number>();
+  for (let k = 0; k + 4 < tokens.length; k++) {
+    if (
+      (is(k, "name", "const") || is(k, "name", "let") || is(k, "name", "var")) &&
+      is(k + 1, "name") &&
+      is(k + 2, "punct", "=") &&
+      is(k + 3, "name", "createRequire") &&
+      is(k + 4, "punct", "(")
+    ) {
+      aliases.add(at(k + 1)!.value);
+      declarations.add(k + 1).add(k + 3);
+    }
+  }
   for (let k = 0; k < tokens.length; k++) {
     const t = tokens[k]!;
-    if (t.kind !== "name") continue;
+    if (t.kind !== "name" || declarations.has(k)) continue;
     const member = is(k - 1, "punct", ".") || is(k - 1, "punct", "?.");
-    if (t.value === "require" && !member && !is(k + 1, "punct", ":")) {
+    if ((t.value === "require" || aliases.has(t.value)) && !member && !is(k + 1, "punct", ":")) {
       if (is(k - 1, "name", "function") || is(k - 1, "name", "typeof")) continue;
       let call = k + 1;
       let form = "require()";
@@ -541,7 +626,16 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       continue;
     }
     if (t.value === "import" && !member) {
-      if (is(k + 1, "punct", ".")) continue; // import.meta
+      if (is(k + 1, "punct", ".")) {
+        // import.meta.resolve() names a module, as require.resolve() does.
+        if (is(k + 2, "name", "meta") && is(k + 3, "punct", ".") && is(k + 4, "name", "resolve")) {
+          const literal = literalCall(k + 5);
+          if (literal !== null) specifiers.push(literal);
+          else if (is(k + 5, "punct", "("))
+            computed.push({ at: t.at, form: "import.meta.resolve() with a computed specifier" });
+        }
+        continue;
+      }
       if (is(k + 1, "punct", "(")) {
         const literal = literalCall(k + 1);
         if (literal === null)

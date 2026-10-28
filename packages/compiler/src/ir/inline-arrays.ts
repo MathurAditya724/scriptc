@@ -60,6 +60,8 @@ export interface InlineArrayRejection {
   readonly declaringClass: string;
   readonly field: string;
   readonly reason: string;
+  /** The use that rules the layout out, when it is one site. */
+  readonly loc?: SrcLoc;
 }
 
 export interface InlineArrayPlan {
@@ -97,8 +99,8 @@ export function planInlineArrays(
     const at = entry.indexOf("\0");
     const declaringClass = entry.slice(0, at);
     const field = entry.slice(at + 1);
-    const reject = (reason: string): void => {
-      rejected.push({ declaringClass, field, reason });
+    const reject = (reason: string, loc?: SrcLoc): void => {
+      rejected.push({ declaringClass, field, reason, ...(loc !== undefined ? { loc } : {}) });
     };
     const decl = classes.get(declaringClass);
     if (decl === undefined) {
@@ -147,9 +149,9 @@ export function planInlineArrays(
       }
       lengthParams.set(name, param);
     }
-    reason ??= otherUses(mod, members, field, declaringClass);
-    if (reason !== null) {
-      reject(reason);
+    const other = reason === null ? otherUses(mod, members, field, declaringClass) : null;
+    if (reason !== null || other !== null) {
+      reject(reason ?? other!.reason, other?.loc);
       continue;
     }
     for (const name of subtree)
@@ -258,17 +260,13 @@ function otherUses(
   members: ReadonlySet<string>,
   field: string,
   declaringClass: string,
-): string | null {
-  const reaches = (type: IrType): boolean => {
-    let found = false;
-    const visit = (t: IrType): boolean => {
-      if (t.kind === "object" && members.has(t.className)) found = true;
-      return !found && everyTypeChild(t, visit);
-    };
-    visit(type);
-    return found;
-  };
+): { reason: string; loc?: SrcLoc } | null {
+  const reaches = holdersOf(mod, members, declaringClass);
   let reason: string | null = null;
+  let loc: SrcLoc | undefined;
+  // Dynamic values that printing, JSON.stringify without a replacer and
+  // publishing only read, and the options a worker copies its data from.
+  const readOnly = new Set<IrExpr>();
   for (const fn of mod.functions) {
     const isDeclaringCtor = fn.name === `%${declaringClass}.constructor`;
     everyStmtList(fn.body, {
@@ -276,9 +274,21 @@ function otherUses(
         if (reason !== null) return false;
         if (e.kind === "classRef" && members.has(e.className))
           reason = `${e.className} is used as a value`;
-        else if ((e.kind === "dynFrom" || e.kind === "caughtToDyn") && reaches(e.value.type))
-          reason = "an instance becomes a dynamic value";
-        else if (e.kind === "fieldIncDec" && e.field === field && members.has(e.className))
+        else if (
+          (e.kind === "libCall" && (readsArguments(e) || e.fn === "worker.new")) ||
+          (e.kind === "intrinsic" &&
+            (e.name.startsWith("console.") || e.name === "threads.publish"))
+        )
+          for (const a of e.args) readOnly.add(a);
+        else if (
+          (e.kind === "dynFrom" || e.kind === "caughtToDyn") &&
+          !readOnly.has(e) &&
+          reaches(e.value.type)
+        ) {
+          reason =
+            "an instance, or a value that can hold one, becomes a dynamic value (a dynamic view reads the field as a new array each time)";
+          loc = e.loc;
+        } else if (e.kind === "fieldIncDec" && e.field === field && members.has(e.className))
           reason = "the field is written outside the constructor";
         else if (
           e.kind === "bin" &&
@@ -301,9 +311,82 @@ function otherUses(
         return reason === null;
       },
     });
-    if (reason !== null) return reason;
+    if (reason !== null) return loc === undefined ? { reason } : { reason, loc };
   }
   return null;
+}
+
+/** Whether values of a type may be, or hold, an instance of `members`
+ * (the subtree of `declaringClass`): a value typed as a member or as a base
+ * of the declaring class, or a class instance, record, union, array, Map or
+ * Set whose fields or elements may hold one. A dynamic view of any of them
+ * reads the instance's fields by name. */
+function holdersOf(
+  mod: IrModule,
+  members: ReadonlySet<string>,
+  declaringClass: string,
+): (type: IrType) => boolean {
+  const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
+  const arms = new Map((mod.unions ?? []).map((u) => [u.id, u.arms]));
+  const records = new Map((mod.records ?? []).map((r) => [r.id, r.fields]));
+  const holderClasses = new Set(members);
+  const holderShapes = new Set<string>();
+  const addWithBases = (name: string): boolean => {
+    let added = false;
+    for (let at: string | undefined = name; at !== undefined; at = classes.get(at)?.base)
+      if (!holderClasses.has(at)) {
+        holderClasses.add(at);
+        added = true;
+      }
+    return added;
+  };
+  addWithBases(declaringClass);
+  const holds = (type: IrType): boolean => {
+    const seen = new Set<string>();
+    let found = false;
+    const visit = (t: IrType): boolean => {
+      if (t.kind === "object") found = holderClasses.has(t.className);
+      else if (t.kind === "record") found = holderShapes.has(t.shapeId);
+      else if (t.kind === "union" && !seen.has(t.unionId)) {
+        seen.add(t.unionId);
+        for (const arm of arms.get(t.unionId) ?? []) if (!visit(arm)) break;
+      }
+      return !found && everyTypeChild(t, visit);
+    };
+    visit(type);
+    return found;
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const cls of mod.classes ?? [])
+      if (!holderClasses.has(cls.name) && cls.fields.some((f) => holds(f.type)))
+        changed = addWithBases(cls.name) || changed;
+    for (const [shapeId, fields] of records)
+      if (!holderShapes.has(shapeId) && fields.some((f) => holds(f.type))) {
+        holderShapes.add(shapeId);
+        changed = true;
+      }
+  }
+  return holds;
+}
+
+/** Library calls that only read their arguments: printing, inspection,
+ * and JSON.stringify without a replacer function. */
+export function readsArguments(e: IrExpr & { kind: "libCall" }): boolean {
+  if (/^(console|insp|inspect)\./.test(e.fn)) return true;
+  switch (e.fn) {
+    case "array.hasProperties":
+    case "array.hasNamedKey":
+    case "array.namedKeys":
+    case "json.stringifyValue":
+      return true;
+    case "json.stringifyReplacer": {
+      const replacer = e.args[1];
+      return replacer?.kind === "dynFrom" && replacer.value.kind === "unitLit";
+    }
+    default:
+      return false;
+  }
 }
 
 function readsField(e: IrExpr, members: ReadonlySet<string>, field: string): boolean {

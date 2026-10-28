@@ -373,10 +373,11 @@ class ContractChecker {
     );
     for (const r of plan.rejected) {
       const note = notes.get(`${r.declaringClass}\0${r.field}`)!;
+      const at = r.loc === undefined ? "" : ` (at ${this.where(r.loc)})`;
       this.report(
         "SC7009",
         note.loc,
-        `'${note.name}' cannot keep its InlineArray contract: ${r.reason}`,
+        `'${note.name}' cannot keep its InlineArray contract: ${r.reason}${at}`,
         "write the field once in the constructor from one of its parameters (subclasses pass theirs through super(...)), never again, and keep the class's instances out of class values and dynamic values",
       );
     }

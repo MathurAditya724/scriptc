@@ -24,9 +24,18 @@
  * Arrays are followed shallowly: only the array objects matter, not the
  * elements, which stay ordinary mutable instances. */
 
-import type { IrExpr, IrFunction, IrGlobal, IrModule, IrStmt, IrType, SrcLoc } from "./ir.js";
+import type {
+  IrClassDef,
+  IrExpr,
+  IrFunction,
+  IrGlobal,
+  IrModule,
+  IrStmt,
+  IrType,
+  SrcLoc,
+} from "./ir.js";
 import { typeKey } from "./ir.js";
-import type { InlineArrayPlan } from "./inline-arrays.js";
+import { readsArguments, type InlineArrayPlan } from "./inline-arrays.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
 
 /** A use that breaks an InlineArray field's contract. */
@@ -87,25 +96,6 @@ const RETURNS_RECEIVER: ReadonlySet<string> = new Set([
   "fillUndefined",
   "copyWithin",
 ]);
-
-/** Library calls that only read their arguments: printing, inspection,
- * and JSON.stringify without a replacer function. */
-function readsArguments(e: IrExpr & { kind: "libCall" }): boolean {
-  if (/^(console|insp|inspect)\./.test(e.fn)) return true;
-  switch (e.fn) {
-    case "array.hasProperties":
-    case "array.hasNamedKey":
-    case "array.namedKeys":
-    case "json.stringifyValue":
-      return true;
-    case "json.stringifyReplacer": {
-      const replacer = e.args[1];
-      return replacer?.kind === "dynFrom" && replacer.value.kind === "unitLit";
-    }
-    default:
-      return false;
-  }
-}
 
 /** Expressions whose value is one of their children's. */
 const PASS_THROUGH: ReadonlySet<IrExpr["kind"]> = new Set([
@@ -510,6 +500,8 @@ class SourceAnalysis {
    * one). */
   private readonly elementRoots = new Set<string>();
   private readonly bases = new Map<string, string | undefined>();
+  private readonly classDefs = new Map<string, IrClassDef>();
+  private readonly subclasses = new Map<string, string[]>();
   private readonly globals = new Map<string, IrGlobal>();
   /** The slot graph (see "Arrays fields hold"). */
   private readonly edges = new Map<string, Set<string>>();
@@ -557,7 +549,15 @@ class SourceAnalysis {
         if (!list) this.methodImpls.set(m, (list = []));
         list.push(`%${cls.name}.${m}`);
       }
-    for (const cls of mod.classes ?? []) this.bases.set(cls.name, cls.base);
+    for (const cls of mod.classes ?? []) {
+      this.bases.set(cls.name, cls.base);
+      this.classDefs.set(cls.name, cls);
+      if (cls.base !== undefined) {
+        const list = this.subclasses.get(cls.base);
+        if (list === undefined) this.subclasses.set(cls.base, [cls.name]);
+        else list.push(cls.name);
+      }
+    }
     for (const g of mod.globals ?? []) this.globals.set(g.id, g);
     for (const cls of plan.classes.values()) this.elementRoots.add(this.rootOf(cls.elemClass));
   }
@@ -1219,7 +1219,12 @@ class SourceAnalysis {
 
   /** The field read whose array values of type `t` in `slots`, or the
    * arrays, Maps, Sets and records inside them, may hold. */
-  private originWithin(slots: readonly string[], t: IrType, depth = 0): SrcLoc | undefined {
+  private originWithin(
+    slots: readonly string[],
+    t: IrType,
+    objects: boolean,
+    depth = 0,
+  ): SrcLoc | undefined {
     if (depth > 4) return undefined;
     if (depth > 0 && this.holdsFieldArray(t))
       for (const slot of slots) {
@@ -1230,27 +1235,65 @@ class SourceAnalysis {
     switch (t.kind) {
       case "array":
       case "set":
-        return this.originWithin(elements, t.elem, depth + 1);
+        return this.originWithin(elements, t.elem, objects, depth + 1);
       case "map":
         return (
-          this.originWithin(elements, t.key, depth + 1) ??
-          this.originWithin(elements, t.value, depth + 1)
+          this.originWithin(elements, t.key, objects, depth + 1) ??
+          this.originWithin(elements, t.value, objects, depth + 1)
         );
       case "union":
         for (const arm of this.arms(t)) {
-          const origin = this.originWithin(slots, arm, depth + 1);
+          const origin = this.originWithin(slots, arm, objects, depth + 1);
           if (origin !== undefined) return origin;
         }
         return undefined;
       case "record":
         for (const f of (this.mod.records ?? []).find((r) => r.id === t.shapeId)?.fields ?? []) {
-          const origin = this.originWithin([`s:${t.shapeId}\0${f.name}`], f.type, depth + 1);
+          const origin = this.originWithin(
+            [`s:${t.shapeId}\0${f.name}`],
+            f.type,
+            objects,
+            depth + 1,
+          );
           if (origin !== undefined) return origin;
         }
         return undefined;
+      // Code that reads an instance's fields by name (a dynamic view) can
+      // reach the arrays they hold. Other code reads them through field
+      // reads, which the graph follows.
+      case "object":
+        return objects ? this.objectOrigin(t.className, depth) : undefined;
       default:
         return undefined;
     }
+  }
+
+  /** `originWithin` through objects for an instance of `className` or of a
+   * subclass: the arrays its fields may hold. An inline field is left out: its reads are
+   * followed where they are. By `className\0depth`. */
+  private readonly objectOrigins = new Map<string, SrcLoc | null>();
+
+  private objectOrigin(className: string, depth: number): SrcLoc | undefined {
+    const key = `${className}\0${depth}`;
+    const known = this.objectOrigins.get(key);
+    if (known !== undefined) return known ?? undefined;
+    // A cycle through fields finds nothing new.
+    this.objectOrigins.set(key, null);
+    let found: SrcLoc | undefined;
+    const visit = (name: string): void => {
+      const cls = this.classDefs.get(name);
+      if (cls === undefined) return;
+      const inline = this.plan.classes.get(name)?.field;
+      for (const f of cls.fields) {
+        if (found !== undefined) return;
+        if (f.name === inline) continue;
+        found = this.originWithin([this.fieldSlot(name, f.name)], f.type, true, depth + 1);
+      }
+      for (const sub of this.subclasses.get(name) ?? []) if (found === undefined) visit(sub);
+    };
+    visit(className);
+    this.objectOrigins.set(key, found ?? null);
+    return found;
   }
 
   /** The slots of the parameters of `fn` that only ever hold the caller's
@@ -1505,11 +1548,19 @@ class SourceAnalysis {
     };
     // `deep`: arrays inside the value escape too (dynamic and library code
     // reads them other than through the reads this pass follows).
-    const escape = (value: IrExpr, loc: SrcLoc, what: string, deep = true): void => {
+    // `objects`: through the fields of class instances too (a dynamic view
+    // reads them by name).
+    const escape = (
+      value: IrExpr,
+      loc: SrcLoc,
+      what: string,
+      deep = true,
+      objects = false,
+    ): void => {
       if (check === null) return;
       const origin =
         this.origin(fn, value) ??
-        (deep ? this.originWithin(this.slotsOf(fn, value), value.type) : undefined);
+        (deep ? this.originWithin(this.slotsOf(fn, value), value.type, objects) : undefined);
       if (origin !== undefined)
         check({
           loc,
@@ -1648,10 +1699,10 @@ class SourceAnalysis {
         }
         case "dynFrom":
         case "caughtToDyn":
-          if (!readSinks.has(e)) escape(e.value, e.loc, "a dynamic value");
+          if (!readSinks.has(e)) escape(e.value, e.loc, "a dynamic value", true, true);
           break;
         case "callValue":
-          for (const a of e.args) escape(a, e.loc, "a call through a function value", false);
+          for (const a of e.args) escape(a, e.loc, "a call through a function value");
           break;
         case "intrinsic":
           // Printing reads its arguments; publishing freezes them.

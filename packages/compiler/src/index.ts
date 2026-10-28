@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { shapeOverlayEnabled } from "./frontend/shape-inference/index.js";
 import { nodeFrontendServices } from "./frontend/services-node.js";
 import {
@@ -9,6 +10,8 @@ import { optimizationField, type NativeOptimization } from "./backend/optimizati
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
 import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
 import { prepareExecutableModule } from "./executable/prepare.js";
+import { nodeIslandOptionsKey } from "./node-islands/policy.js";
+import { setIslandResolver } from "./node-islands/resolve.js";
 import {
   prepareLibrary,
   libraryLocalizeSymbols,
@@ -457,6 +460,10 @@ export async function analyzeCached(
   }
   return result;
 }
+
+// Island code resolves through Node (node-islands/resolve.ts; the
+// self-hosted compiler builds no islands).
+setIslandResolver((fromFile, spec) => createRequire(fromFile).resolve(spec));
 
 const nodeFrontend: FrontendFactory = (
   entry,
@@ -926,7 +933,7 @@ async function prepareExecutableInput(
     if (!moduleRuntimeFeatures(mod).nodeIsland) {
       delete mod.nodeIsland;
     } else if (outputKind === "exe") {
-      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      const recorded = libnodeRecord(opts.libnode, opts.outPath, process.env, dirname(entryPath));
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
       mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
@@ -1762,7 +1769,7 @@ async function compileTracked(
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
       // Calls into Node record the libnode pack; their entries record its
       // identity (node-islands/libnode.ts) and a hit requires it unchanged.
-      libnodeIdentity: () => libnodeCacheKey(opts.libnode),
+      libnodeIdentity: () => libnodeCacheKey(opts.libnode, process.env, dirname(entryPath)),
       ...(opts.largePages === true ? { largePages: true as const } : {}),
       ...targetCpuField(opts.targetCpu),
       ...(opts.cpuDispatch === true ? { cpuDispatch: true as const } : {}),
@@ -1770,6 +1777,9 @@ async function compileTracked(
       ...(functionLayoutDigest === undefined ? {} : { functionLayout: functionLayoutDigest }),
       ...checkerField(),
       ...(youngNurseryRequested() ? { youngNursery: true as const } : {}),
+      ...(nodeIslandOptionsKey(opts.nodeIslands) !== ""
+        ? { nodeIslands: nodeIslandOptionsKey(opts.nodeIslands) }
+        : {}),
       ...(heapCensusRequested() ? { heapCensus: true as const } : {}),
       npmStatic: opts.npmStatic ?? null,
       ...(shapeOverlayEnabled() ? { shapeOverlay: true as const } : {}),

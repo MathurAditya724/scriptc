@@ -4,16 +4,19 @@
  * scr_node_island_host.h embeds this file as a C string; regenerate it
  * with `node scripts/node-island-host.mjs` after every change.
  *
- * The libnode bridge (scr_node_bridge.cc) installs a native `settle`
- * function as globalThis.__scriptcNodeIslandHost before this script runs,
- * and takes the dispatcher this script leaves as
- * globalThis.__scriptcNodeIsland afterwards; it deletes both globals.
+ * The libnode bridge (scr_node_bridge.cc) installs its natives (`settle`,
+ * and for the hosted loop `run` and `listen`) as
+ * globalThis.__scriptcNodeIslandHost before this script runs, and takes the
+ * dispatcher this script leaves as globalThis.__scriptcNodeIsland
+ * afterwards (`call` and the hosted-loop helpers); it deletes both globals.
  *
  * A copy of the call semantics lives in packages/node/index.js, which runs
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire, registerHooks } = require("node:module");
+const { createRequire, isBuiltin, registerHooks } = require("node:module");
+const { constants: osConstants } = require("node:os");
+const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
 
@@ -154,18 +157,220 @@ function call(id, sync, file, specifier, name, argsJson) {
   return undefined;
 }
 
+// ── island modules (scope-B NI-4) ──────────────────────────────────────
+// Island code loaded by absolute path: require (CommonJS, and require(esm)
+// for ES modules without top-level await) answers the exports; import
+// answers a promise of the namespace.
+const { pathToFileURL } = require("node:url");
+
+function load(path, esm) {
+  // A built-in module's name, with or without the node: prefix.
+  if (isBuiltin(path)) return require(path);
+  if (esm) return import(pathToFileURL(path).href);
+  return createRequire(path)(path);
+}
+
+// ── the hosted loop (scope-B NI-3) ─────────────────────────────────────
+// The runtime's ticks, timers and immediates are Node's, created here with
+// Node's own timers (captured now, so island code replacing the globals
+// does not reach them) and run through the native `run`. Handles name the
+// Node objects until the runtime clears them.
+
+const JOB_TICK = 2;
+const JOB_TIMER = 3;
+const JOB_IMMEDIATE = 4;
+const handles = new Map();
+let nextHandle = 1;
+
+function onTick(token) {
+  nativeHost.run(JOB_TICK, token);
+}
+
+function onTimer(token) {
+  nativeHost.run(JOB_TIMER, token);
+}
+
+function onImmediate(handle, token) {
+  handles.delete(handle);
+  nativeHost.run(JOB_IMMEDIATE, token);
+}
+
+function setTimer(delay, repeat, ref, token) {
+  let timer;
+  if (repeat > 0 && delay === repeat) {
+    timer = timers.setInterval(onTimer, repeat, token);
+  } else {
+    timer = timers.setTimeout(onTimer, delay, token);
+    // An interval migrated mid-period: its first run comes after the rest
+    // of the period, later ones every `repeat` (Node re-arms a Timeout
+    // whose _repeat is set, exactly as for setInterval).
+    if (repeat > 0) timer._repeat = repeat;
+  }
+  if (!ref) timer.unref();
+  const handle = nextHandle++;
+  handles.set(handle, timer);
+  return handle;
+}
+
+function clearTimer(handle) {
+  const timer = handles.get(handle);
+  if (timer === undefined) return;
+  handles.delete(handle);
+  timers.clearTimeout(timer);
+}
+
+function refTimer(handle, ref) {
+  const timer = handles.get(handle);
+  if (timer !== undefined) {
+    if (ref) timer.ref();
+    else timer.unref();
+  }
+}
+
+function refreshTimer(handle) {
+  const timer = handles.get(handle);
+  if (timer !== undefined) timer.refresh();
+}
+
+function setImmediateJob(ref, token) {
+  const handle = nextHandle++;
+  const immediate = timers.setImmediate(onImmediate, handle, token);
+  if (!ref) immediate.unref();
+  handles.set(handle, immediate);
+  return handle;
+}
+
+function clearImmediateJob(handle) {
+  const immediate = handles.get(handle);
+  if (immediate === undefined) return;
+  handles.delete(handle);
+  timers.clearImmediate(immediate);
+}
+
+function refImmediate(handle, ref) {
+  refTimer(handle, ref);
+}
+
+function nextTick(token) {
+  process.nextTick(onTick, token);
+}
+
+// ── process state (scope-B NI-3) ─────────────────────────────────────────
+// Signal and 'exit' listeners of island code join the runtime's registries
+// at their registration position, so one registry orders both sides and
+// the runtime keeps owning every signal disposition: Node's own handlers,
+// which would hand a signal to libuv and reset it to SIG_DFL when the last
+// listener goes, are taken off. The listeners stay on `process` (listeners
+// and listenerCount answer as in Node); the runtime calls them through
+// `emit`, and Node's own 'exit' emission is left to the runtime's exit
+// sequence.
+
+const EVENT_SIGNAL = 1;
+const EVENT_EXIT = 2;
+const signalNames = new Set(Object.keys(osConstants.signals));
+const islandListeners = [];
+let nextListener = 1;
+
+function eventKind(event) {
+  if (event === "exit") return EVENT_EXIT;
+  return typeof event === "string" && signalNames.has(event) ? EVENT_SIGNAL : 0;
+}
+
+for (const [event, name] of [
+  ["newListener", "startListeningIfSignal"],
+  ["removeListener", "stopListeningIfSignal"],
+]) {
+  for (const listener of process.listeners(event)) {
+    if (listener.name === name) process.removeListener(event, listener);
+  }
+}
+
+process.on("newListener", (event, listener) => {
+  const kind = eventKind(event);
+  if (kind === 0) return;
+  const id = nextListener++;
+  islandListeners.push({ event, listener, id, raw: undefined });
+  nativeHost.listen(kind, event, id, 1, 0);
+});
+
+function forget(i, kind) {
+  const entry = islandListeners[i];
+  islandListeners.splice(i, 1);
+  nativeHost.listen(kind, entry.event, entry.id, 0, 0);
+}
+
+process.on("removeListener", (event, listener) => {
+  const kind = eventKind(event);
+  if (kind === 0) return;
+  // Node reports the removed registration as the raw listener it installed (a
+  // once wrapper removing itself reports the wrapper) or as the listener
+  // itself. The raw listener each entry recorded separates a once
+  // registration from an `on` registration of the same function: the removed
+  // one is the entry whose raw listener is no longer on `process`.
+  const live = process.rawListeners(event);
+  let same = -1;
+  for (let i = islandListeners.length - 1; i >= 0; i--) {
+    const entry = islandListeners[i];
+    if (entry.event !== event) continue;
+    if (entry.listener !== listener && entry.raw !== listener) continue;
+    if (entry.raw !== undefined && !live.includes(entry.raw)) {
+      forget(i, kind);
+      return;
+    }
+    if (same < 0) same = i;
+  }
+  // Duplicate registrations of one function share a raw listener; Node
+  // removes the most recent, which is the last matching entry.
+  if (same >= 0) forget(same, kind);
+});
+
+// The raw listener is the function handed to the emitter (a once wrapper
+// for process.once, which registers through process.on): tag each entry
+// with it as its registration returns. Node emits newListener before it
+// installs the listener, so the entry learns its raw only afterwards.
+for (const name of ["on", "addListener", "prependListener"]) {
+  const add = process[name];
+  process[name] = function addListener(event, listener) {
+    const start = islandListeners.length;
+    const result = Reflect.apply(add, this, arguments);
+    if (islandListeners.length > start) {
+      const registered = listener.listener ?? listener;
+      for (let i = start; i < islandListeners.length; i++) {
+        const entry = islandListeners[i];
+        if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
+          entry.raw = listener;
+          break;
+        }
+      }
+    }
+    return result;
+  };
+}
+
+function emit(kind, id, name, arg) {
+  const entry = islandListeners.find((e) => e.id === id);
+  if (entry === undefined) return;
+  // The registered function: the listener itself, or its once wrapper,
+  // which removes itself before calling it.
+  const registered =
+    entry.raw ??
+    process.rawListeners(entry.event).find((raw) => (raw.listener ?? raw) === entry.listener);
+  if (registered === undefined) return;
+  if (kind === EVENT_SIGNAL) Reflect.apply(registered, process, [name, arg]);
+  else Reflect.apply(registered, process, [arg]);
+}
+
+const nodeEmit = process.emit;
+process.emit = function emit(event, ...args) {
+  if (event === "exit") return this.listenerCount("exit") > 0;
+  return Reflect.apply(nodeEmit, this, [event, ...args]);
+};
+
 // Writes reach the shared stdout and stderr before control returns to the
 // program, as the program's own writes do.
 for (const stream of [process.stdout, process.stderr]) {
   if (stream._handle && typeof stream._handle.setBlocking === "function")
     stream._handle.setBlocking(true);
-}
-
-// The program ends with `code` (the bridge then runs Node's loop to its
-// end, which emits 'beforeExit' and 'exit'): Node's process shares it, as
-// it shares one process under Node.
-function finish(code) {
-  if (code !== 0) process.exitCode = code;
 }
 
 // process.execPath is this program, not a node executable: a fork without
@@ -185,4 +390,16 @@ childProcess.fork = function fork(modulePath, args, options) {
 };
 require("node:module").syncBuiltinESMExports();
 
-globalThis.__scriptcNodeIsland = { call, finish };
+globalThis.__scriptcNodeIsland = {
+  call,
+  setTimer,
+  clearTimer,
+  refTimer,
+  refreshTimer,
+  setImmediate: setImmediateJob,
+  clearImmediate: clearImmediateJob,
+  refImmediate,
+  nextTick,
+  emit,
+  load,
+};

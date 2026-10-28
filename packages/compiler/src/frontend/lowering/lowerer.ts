@@ -44,6 +44,13 @@ import {
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
+import {
+  activeNodeIslands,
+  isForeignType,
+  setActiveNodeIslands,
+  type NodeIslandSet,
+} from "../../node-islands/boundary.js";
+import type { IslandModuleBinding } from "./lower-node-island.js";
 import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -938,6 +945,9 @@ export interface LowerResult {
 }
 
 export interface LowerOptions {
+  /** Packages that run in Node islands (scope-B NI-4): their imports lower
+   * to island loads and their values to island handles. */
+  nodeIslands?: NodeIslandSet | null;
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
   /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
@@ -965,6 +975,8 @@ export interface LowerOptions {
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
    * entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
@@ -1086,6 +1098,8 @@ export interface LowererMode {
   dynNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
@@ -1176,6 +1190,60 @@ export function lowerToIr(
   moduleOrder: ts.SourceFile[],
   options: LowerOptions = {},
 ): LowerResult {
+  setActiveNodeIslands(options.nodeIslands ?? null);
+  try {
+    const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
+    markModuleInitFences(program, result.runtimeFences);
+    return result;
+  } finally {
+    setActiveNodeIslands(null);
+  }
+}
+
+/** Marks the runtime fences in npm package code whose site is top-level
+ * module code (outside every function body): they throw when the module
+ * evaluates (ScrDiagnostic.moduleInit). */
+function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
+  for (const d of fences) {
+    if (!d.loc.file.includes("/node_modules/")) continue;
+    // A fence without a source position belongs to synthesized code, such
+    // as the global object's lookup (global-values.ts), which runs when the
+    // program calls it, not when the module evaluates.
+    if (d.loc.start < 0) continue;
+    const sf = program.getSourceFile(d.loc.file);
+    if (sf === undefined) continue;
+    let inFunction = false;
+    let node: ts.Node | undefined = sf;
+    while (node !== undefined && !inFunction) {
+      let next: ts.Node | undefined;
+      ts.forEachChild(node, (child) => {
+        if (
+          next === undefined &&
+          ts.tokenStartOfNode(child) <= d.loc.start &&
+          d.loc.start < child.end
+        )
+          next = child;
+        return undefined;
+      });
+      if (next === undefined) break;
+      if (
+        ts.isFunctionLike(next) ||
+        (ts.isPropertyDeclaration(next) &&
+          !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
+      )
+        inFunction = true;
+      node = next;
+    }
+    if (!inFunction) d.moduleInit = true;
+  }
+}
+
+function lowerToIrWithIslands(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  moduleOrder: ts.SourceFile[],
+  options: LowerOptions,
+): LowerResult {
   const phaseTiming = process.env["SCRIPTC_TIMING"] === "1";
   const phaseStarted = performance.now();
   let phaseLast = phaseStarted;
@@ -1219,7 +1287,11 @@ export function lowerToIr(
   // Inline require() calls closing a cycle inside the appended subgraphs
   // join preflight's set (the same run-time refusal by name).
   const inlineRequireCycleCalls = new Set<ts.Node>(options.inlineRequireCycleCalls ?? []);
-  const graph = { edges: options.moduleEdges, inlineCycleCalls: inlineRequireCycleCalls };
+  const graph = {
+    edges: options.moduleEdges,
+    inlineCycleCalls: inlineRequireCycleCalls,
+    rejected: options.dynamicImportRejections,
+  };
   for (let pass = 0; pass < 32; pass++) {
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
@@ -1240,6 +1312,7 @@ export function lowerToIr(
     targetPlatform,
     startupCrash,
     inlineRequireCycleCalls,
+    dynamicImportRejections: options.dynamicImportRejections,
     ffiImports,
     libraryCallbacks,
     forkTargets,
@@ -1264,6 +1337,7 @@ export function lowerToIr(
           targetPlatform,
           startupCrash,
           inlineRequireCycleCalls,
+          dynamicImportRejections: options.dynamicImportRejections,
           ffiImports,
           libraryCallbacks,
           forkTargets,
@@ -1329,6 +1403,7 @@ export function lowerToIr(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1374,6 +1449,7 @@ export function lowerToIr(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1515,6 +1591,7 @@ export function lowerToIr(
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
       ffiImports,
       libraryCallbacks,
@@ -2135,6 +2212,8 @@ export class Lowerer {
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  /** LoadResult.dynamicImportRejections. */
+  readonly dynamicImportRejections: ReadonlyMap<ts.SourceFile, StartupCrash>;
   /** Immutable callable aliases and compiler-generated adapters. The map
    * is symbol-keyed, so shadowing and cross-module imports keep the same
    * exact binding discipline as globals/functions. */
@@ -3472,7 +3551,9 @@ export class Lowerer {
    * collection; lowerDynamicImportCall reads it per site). */
   readonly dynImports = new Map<
     string,
-    { kind: "program-module" } | { kind: "static-builtin"; module: string }
+    | { kind: "program-module" }
+    | { kind: "static-builtin"; module: string }
+    | { kind: "rejected"; crash: StartupCrash }
   >();
 
   readonly createRequireImports = new Map<
@@ -3533,6 +3614,11 @@ export class Lowerer {
   /** The program calls into Node.js (@scriptc/node): the module carries
    * the nodeIsland record, which the executable build fills in. */
   usesNodeIsland = false;
+  /** The program's Node island packages (scope-B NI-4), or null. */
+  readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
+  /** Island module loads, by the importing file and specifier: the module
+   * global holding what the import form sees (lower-node-island.ts). */
+  readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
   readonly nodeIslandModules = new NodeIslandModuleCollector();
   /** Each call's caller literal, set to its tree path when lowering ends. */
@@ -3543,6 +3629,8 @@ export class Lowerer {
     caller: string;
     target: string;
   }[] = [];
+  /** Each island module load's path literal, set to its tree path when lowering ends. */
+  readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -4027,9 +4115,15 @@ export class Lowerer {
       // one lowers again rather than replaying a record.
       checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
       checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
+      // Island module loads hold literals of the unit's IR too, and their
+      // module globals (with each CommonJS named import's snapshot global)
+      // are created by the first load: a unit that adds either lowers again.
+      checkedTable("islandModules", () => this.islandModules.size),
+      checkedTable("nodeIslandLoads", () => this.nodeIslandLoads.length),
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
+      checkedTable("dynamicImportRejections", () => this.dynamicImportRejections.size),
       checkedTable("staticCallables", () => this.staticCallables.size),
       checkedTable("genericFnsBySymbol", () => this.genericFnsBySymbol.size),
       checkedTable("objLitGenericFns", () => this.objLitGenericFns.size),
@@ -4249,6 +4343,7 @@ export class Lowerer {
   static readonly unjournaled: readonly string[] = [
     // settings
     "frontendServices",
+    "nodeIslands",
     "ambient",
     "overridesAmbient",
     "remainder",
@@ -4781,6 +4876,7 @@ export class Lowerer {
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
+    this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.reachable = mode.reachable ?? null;
@@ -4801,8 +4897,12 @@ export class Lowerer {
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
+    const islands = this.nodeIslands;
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
+      ...(islands !== null
+        ? { foreignType: (t: ts.Type) => isForeignType(islands, t, this.checker) }
+        : {}),
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
@@ -10550,14 +10650,16 @@ export class Lowerer {
   }
 
   /** The module's Node island record: the collected module tree, with each
-   * call's caller literal set to its path in that tree. The executable
-   * build fills in the libnode pack (index.ts). */
+   * call's caller literal and each load's path literal set to its path in
+   * that tree. The executable build fills in the libnode pack (index.ts). */
   private nodeIslandRecord(): NonNullable<IrModule["nodeIsland"]> {
     const modules = this.nodeIslandModules.tree();
     for (const { literal, caller } of this.nodeIslandCallers)
       literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
     for (const { literal, caller, target } of this.nodeIslandSpecifiers)
       literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
+    for (const { literal, path } of this.nodeIslandLoads)
+      literal.value = NodeIslandModuleCollector.loadPath(modules, path);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
   }
 
