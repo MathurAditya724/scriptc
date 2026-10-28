@@ -6,7 +6,8 @@
  * module where the program loads it and only for reads that run after the
  * binding, never adds a hoisted class to an exports literal that runs
  * before the class's declaration, does not fold a literal's `__proto__`,
- * and prints what Node prints. A module in a require cycle through another
+ * keeps constructors whose methods store from for-in and for-of heads where
+ * strict mode throws, and prints what Node prints. A module in a require cycle through another
  * module is not read through its exports from the cycle. The rewritten
  * files are read from the overlay's debug output
  * (SCRIPTC_DEBUG_SHAPE_OVERLAY). */
@@ -103,6 +104,12 @@ test(
     expect(rewrittenIfAny(debug, join(pkg, "coerce.js")) ?? "").not.toContain(
       "class __ns_shapes_Box",
     );
+    // loops.js's methods store from for-in and for-of heads into an
+    // undeclared name and into a property of a string, which throws in a
+    // class body.
+    const loops = rewrittenIfAny(debug, join(pkg, "loops.js")) ?? "";
+    expect(loops).not.toContain("class __ns_shapes_Bag");
+    expect(loops).not.toContain("class __ns_shapes_Cell");
     const vec = rewritten(debug, join(pkg, "vec.js"));
     expect(vec).toContain("class __ns_geo_Vec");
     expect(vec).toContain("module.exports = { geo: geo };");

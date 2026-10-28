@@ -480,11 +480,18 @@ function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean
     const counts =
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
       (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken);
+    // `for (k in o)` and `for (k of a)` store into an expression head on
+    // every iteration, like `k = …`.
+    const loopHead =
+      (ts.isForInStatement(n) || ts.isForOfStatement(n)) &&
+      !ts.isVariableDeclarationList(n.initializer)
+        ? (n.initializer as ts.Expression)
+        : undefined;
     const target = assigns
       ? (n as ts.BinaryExpression).left
       : counts
         ? (n as ts.PrefixUnaryExpression).operand
-        : undefined;
+        : loopHead;
     // A store that sloppy mode drops (into a primitive, a frozen object or a
     // read-only property) throws in strict mode: only stores through `this`,
     // a fresh or method receiver object, are known to behave the same.
@@ -501,15 +508,13 @@ function strictSafe(checker: ts.TypeChecker, fn: ts.FunctionExpression): boolean
       )
         safe = false;
     }
-    if (
-      ts.isBinaryExpression(n) &&
-      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-      ts.isIdentifier(n.left)
-    ) {
+    // A store into an undeclared name creates a global in sloppy mode and
+    // throws a ReferenceError in strict mode.
+    const stored = assigns ? (n as ts.BinaryExpression).left : loopHead;
+    if (stored !== undefined && ts.isIdentifier(stored)) {
       let declared = false;
       try {
-        const s = checker.getSymbolAtLocation(n.left);
+        const s = checker.getSymbolAtLocation(stored);
         declared = s !== undefined && s.declarations.length > 0;
       } catch {
         declared = false;
