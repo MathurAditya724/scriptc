@@ -315,24 +315,37 @@ process.on("removeListener", (event, listener) => {
 // for process.once, which registers through process.on): tag each entry
 // with it as its registration returns. Node emits newListener before it
 // installs the listener, so the entry learns its raw only afterwards.
-for (const name of ["on", "addListener", "prependListener"]) {
-  const add = process[name];
-  process[name] = function addListener(event, listener) {
-    const start = islandListeners.length;
-    const result = Reflect.apply(add, this, arguments);
-    if (islandListeners.length > start) {
-      const registered = listener.listener ?? listener;
-      for (let i = start; i < islandListeners.length; i++) {
-        const entry = islandListeners[i];
-        if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
-          entry.raw = listener;
-          break;
-        }
-      }
+function tagRaw(start, event, listener) {
+  if (islandListeners.length === start) return;
+  const registered = listener.listener ?? listener;
+  for (let i = start; i < islandListeners.length; i++) {
+    const entry = islandListeners[i];
+    if (entry.event === event && entry.listener === registered && entry.raw === undefined) {
+      entry.raw = listener;
+      return;
     }
-    return result;
-  };
+  }
 }
+
+// The wrappers replacing process's emitter methods, installed together by
+// installProcessMethods below. One wrapper serves `on` and `addListener`,
+// which are one function in Node, and each has the name of the Node function
+// it wraps.
+const processMethods = {};
+const nodeAddListener = process.addListener;
+const nodePrependListener = process.prependListener;
+processMethods.on = processMethods.addListener = function addListener(event, listener) {
+  const start = islandListeners.length;
+  const result = Reflect.apply(nodeAddListener, this, arguments);
+  tagRaw(start, event, listener);
+  return result;
+};
+processMethods.prependListener = function prependListener(event, listener) {
+  const start = islandListeners.length;
+  const result = Reflect.apply(nodePrependListener, this, arguments);
+  tagRaw(start, event, listener);
+  return result;
+};
 
 function emit(kind, id, name, arg) {
   const entry = islandListeners.find((e) => e.id === id);
@@ -348,10 +361,31 @@ function emit(kind, id, name, arg) {
 }
 
 const nodeEmit = process.emit;
-process.emit = function emit(event, ...args) {
+processMethods.emit = function emit(event, ...args) {
   if (event === "exit") return this.listenerCount("exit") > 0;
   return Reflect.apply(nodeEmit, this, [event, ...args]);
 };
+
+// Node's process inherits its emitter methods from EventEmitter.prototype,
+// through a prototype of its own that holds only `constructor`. The wrappers
+// go on that prototype with EventEmitter.prototype's attributes, so process
+// has no own property for them: Object.keys(process), Object.hasOwn and
+// for...in see what they see in Node. for...in lists a prototype's keys
+// before its parent's, so the keys EventEmitter.prototype lists before the
+// last wrapped method are defined there too, with the same values, in their
+// order.
+function installProcessMethods() {
+  const processPrototype = Object.getPrototypeOf(process);
+  const emitterPrototype = Object.getPrototypeOf(processPrototype);
+  const keys = Object.keys(emitterPrototype);
+  const last = Math.max(...Object.keys(processMethods).map((key) => keys.indexOf(key)));
+  for (const key of keys.slice(0, last + 1)) {
+    const descriptor = Object.getOwnPropertyDescriptor(emitterPrototype, key);
+    if (Object.hasOwn(processMethods, key)) descriptor.value = processMethods[key];
+    Object.defineProperty(processPrototype, key, descriptor);
+  }
+}
+installProcessMethods();
 
 // Writes reach the shared stdout and stderr before control returns to the
 // program, as the program's own writes do.
