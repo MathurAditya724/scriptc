@@ -2,7 +2,8 @@ import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
-import { lowerIslandExpr } from "./lower-node-island.js";
+import { islandHandleBinding, lowerIslandExpr, lowerIslandSubclass } from "./lower-node-island.js";
+import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import {
   allBytesArms,
   indexedUnionArms,
@@ -1792,6 +1793,8 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ownPrototypeResetStatement(lowerer, stmt))
     return { kind: "block", body: [], loc: locOf(stmt) };
+  if (ts.isClassDeclaration(stmt) && isIslandSubclassDecl(stmt))
+    return lowerIslandSubclass(lowerer, stmt);
   if (ts.isClassDeclaration(stmt)) {
     if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous local class declarations");
     const info = lowerer.lowerClassExpressionInfo(stmt);
@@ -6207,6 +6210,18 @@ export function lowerVarDecl(
       if (wrapped) return { kind: "assign", localId: g.id, value: wrapped, loc: locOf(decl) };
       return null;
     }
+    // `const files = pkg.list()`: an undeclared island object stays a
+    // handle (lower-node-island.ts), so the binding holds it as dyn.
+    if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+      g.type = DYN;
+      return {
+        kind: "assign",
+        localId: g.id,
+        value: lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN),
+        ...(g.tdz ? { initializes: true as const } : {}),
+        loc: locOf(decl),
+      };
+    }
     const guardedRead = isGuardedRecordRead(lowerer, decl)
       ? lowerAbsenceProbe(lowerer, decl.initializer)
       : null;
@@ -6327,6 +6342,12 @@ export function lowerVarDecl(
       type.kind === "dyn"
         ? dynUndefinedExpr(locOf(decl))
         : lowerer.unassignedSlotInit(type, locOf(decl));
+    return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+  }
+
+  if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+    const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
+    const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
   }
 

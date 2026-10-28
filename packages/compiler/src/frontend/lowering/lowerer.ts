@@ -3644,6 +3644,10 @@ export class Lowerer {
   }[] = [];
   /** Each island module load's path literal, set to its tree path when lowering ends. */
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
+  /** Island handle bindings by symbol (lower-node-island.ts). */
+  readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
+  /** `instanceof` expressions the island lowering already handles. */
+  readonly islandInstanceofHandled = new Set<ts.Node>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -4407,6 +4411,9 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // NI-5: whether a symbol names an island handle binding depends only on
+    // its declaration, so the answer is a memo keyed by symbol.
+    "islandHandleBindings",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -4441,6 +4448,7 @@ export class Lowerer {
     "genericClassDemandPriority",
     "unitEvents",
     // scratch of the lowering in progress, and memos keyed by nodes
+    "islandInstanceofHandled",
     "nullishBindings",
     "implicitLocalFns",
     "builtinClassAliases",

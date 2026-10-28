@@ -2029,6 +2029,9 @@ typedef struct ScrDynHandleOps {
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
+/* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */
+enum { SCR_DYN_HINT_DEFAULT = 0, SCR_DYN_HINT_NUMBER = 1, SCR_DYN_HINT_STRING = 2 };
+
 /* A WebIDL interface over a handle tag: its constructor value, whose
  * prototype holds the tag's methods (ScrDynHandleOps.methods, the same
  * function values a member read answers) and the getters below, each
