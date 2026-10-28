@@ -307,9 +307,13 @@ export function lowerDynObjectLiteral(
       const raw =
         builtin === "path" || builtin === "path/posix" || builtin === "path/win32"
           ? pathModuleValue(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
-          : isJsSourceFile(ts.getSourceFileOfNode(expr))
-            ? lowerer.lowerExprExpecting(prop.expression, DYN)
-            : lowerer.lowerExpr(prop.expression);
+          : !boxValue &&
+              (conditionalSpreadOf(prop.expression) !== null ||
+                andSpreadOf(lowerer, prop.expression) !== null)
+            ? lowerConditionalDynSource(lowerer, prop.expression)
+            : isJsSourceFile(ts.getSourceFileOfNode(expr))
+              ? lowerer.lowerExprExpecting(prop.expression, DYN)
+              : lowerer.lowerExpr(prop.expression);
       fenceSymbolFieldCopy(lowerer, prop.expression, raw.type);
       const source = boxValue ? boxValue(prop.expression, raw) : lowerer.coerceToExpected(raw, DYN);
       if (source.type.kind !== "dyn") {
@@ -972,6 +976,11 @@ export function lowerObjectLiteral(
   // message even when they also make the literal's type unmappable
   // (a getter or a `this`-returning method would otherwise surface as an
   // opaque type fence on the whole literal).
+  // A conditional spread the field desugar cannot express is only DEFERRED
+  // here: the checked-dynamic copy below (`...(c ? a : b)` is one
+  // copyDataProperties of whichever arm runs) may still lower the whole
+  // literal, and the fence's message fires where that declines.
+  let deferredConditionalSpread: ts.SpreadAssignment | null = null;
   for (const prop of expr.properties.nodes) {
     if (ts.isSpreadAssignment(prop)) {
       // Supported shapes: FULL spreads of known record shapes read as
@@ -984,11 +993,7 @@ export function lowerObjectLiteral(
       // name, collision-fenced below). Everything else stays fenced.
       const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
       if (cs === "unsupported" && conditionalRecordSpreadOf(lowerer, prop.expression) === null) {
-        lowerer.unsupported(
-          "SC1090",
-          prop,
-          "conditional spreads beyond `...(c ? { field: v } : {})` and `...(c ? record : {})` (one arm must be empty — spell other shapes as optional fields)",
-        );
+        deferredConditionalSpread ??= prop;
       }
       // Spread ORDER is fenced in the field-by-field desugar below, not
       // here: the index-signature merge path supports any order (keyed
@@ -1284,6 +1289,16 @@ export function lowerObjectLiteral(
   ) {
     return lowerDynObjectLiteral(lowerer, expr);
   }
+  if (deferredConditionalSpread) {
+    // The checked-dynamic build copies whichever arm the conditional picks,
+    // in Node's own-key order, so a shape the field desugar cannot express
+    // still lands — copy then validate into the record. When the target has
+    // no checked extraction the fence's own message fires.
+    const fallback =
+      mapped && mapped.kind === "record" ? dynSpreadLiteral(lowerer, expr, mapped, true) : null;
+    if (fallback) return fallback;
+    lowerer.unsupported("SC1090", deferredConditionalSpread, CONDITIONAL_SPREAD_FENCE);
+  }
   if (!mapped || mapped.kind !== "record") lowerer.badType(expr, tsType);
   let type: IrType = mapped;
   // A fresh, plain literal can construct its fields directly for a known
@@ -1399,6 +1414,14 @@ export function lowerObjectLiteral(
       return lowerDynObjectLiteral(lowerer, expr);
     }
   }
+  /** A conditional spread's own-key presence is runtime state: which arm
+   * runs — and whether it writes the key at all — outruns the desugar's one
+   * entry per name (a later conditional over an earlier contributor, an
+   * index-signature slot, a required field's empty arm). Those refusals
+   * retry the whole literal as Node's own-key copy into a dyn object,
+   * validated into `type` afterwards. Null leaves the caller's refusal. */
+  const conditionalFallback = (): IrExpr | null => dynSpreadLiteral(lowerer, expr, type, true);
+
   // The clone probe may lower the leading spread before declining (a
   // static `as` cast can make the checker-visible shape match while its
   // erased IR value keeps a wider shape). Reuse that exact value in the
@@ -1504,6 +1527,8 @@ export function lowerObjectLiteral(
       if (ts.isSpreadAssignment(prop)) {
         const cs = conditionalSpreadOf(prop.expression) ?? andSpreadOf(lowerer, prop.expression);
         if (cs === "unsupported" || (cs && cs.props.length !== 1)) {
+          const conditionalDyn = conditionalFallback();
+          if (conditionalDyn) return conditionalDyn;
           lowerer.unsupported(
             "SC1090",
             prop,
@@ -1785,6 +1810,8 @@ export function lowerObjectLiteral(
           const fieldType = fieldTypes.get(name);
           if (!fieldType) {
             if (shape.indexValue) {
+              const conditionalDyn = conditionalFallback();
+              if (conditionalDyn) return conditionalDyn;
               lowerer.unsupported(
                 "SC1090",
                 prop,
@@ -1799,6 +1826,8 @@ export function lowerObjectLiteral(
             lowerer.absentFieldValue(fieldType, locOf(prop)) ??
             (fieldType.kind === "dyn" ? dynUndefinedExpr(locOf(prop)) : null);
           if (!absent) {
+            const conditionalDyn = conditionalFallback();
+            if (conditionalDyn) return conditionalDyn;
             lowerer.unsupported(
               "SC1090",
               prop,
@@ -1806,6 +1835,8 @@ export function lowerObjectLiteral(
             );
           }
           if (fields.some((f) => f.name === name)) {
+            const conditionalDyn = conditionalFallback();
+            if (conditionalDyn) return conditionalDyn;
             lowerer.unsupported(
               "SC1090",
               prop,
@@ -1967,6 +1998,8 @@ export function lowerObjectLiteral(
           // (divergence 36's stance, same as the plain-record spread).
           if (!targetType) continue;
           if (conditionalNames.has(f.name)) {
+            const conditionalDyn = conditionalFallback();
+            if (conditionalDyn) return conditionalDyn;
             lowerer.unsupported(
               "SC1090",
               prop,
@@ -2321,6 +2354,8 @@ export function lowerObjectLiteral(
         // coercion applies.
         if (lift) value = lowerer.applyWidthLift(lift, value, targetType, locOf(prop));
         if (conditionalNames.has(f.name)) {
+          const conditionalDyn = conditionalFallback();
+          if (conditionalDyn) return conditionalDyn;
           lowerer.unsupported(
             "SC1090",
             prop,
@@ -2534,6 +2569,8 @@ export function lowerObjectLiteral(
     // conditional-spread entry cannot be overridden (its ternary IS the
     // spread's evaluation; splicing it out would drop that).
     if (conditionalNames.has(name)) {
+      const conditionalDyn = conditionalFallback();
+      if (conditionalDyn) return conditionalDyn;
       lowerer.unsupported(
         "SC1090",
         prop,
@@ -2935,6 +2972,11 @@ function dynSpreadSource(lowerer: Lowerer, node: ts.Expression): boolean {
   return mapped?.kind === "dyn" || indexed(mapped);
 }
 
+/** The syntax fence for a conditional spread no desugar expresses (one arm
+ * must be empty). Fired once the checked-dynamic fallback declines. */
+const CONDITIONAL_SPREAD_FENCE =
+  "conditional spreads beyond `...(c ? { field: v } : {})` and `...(c ? record : {})` (one arm must be empty — spell other shapes as optional fields)";
+
 /** `expr` as a checked-dynamic object validated into `type` — the
  * copy-then-check a spread of an untyped or runtime-keyed source needs
  * (`{ ...item }` out of a `Record<string, unknown>`). Null when no spread
@@ -2945,9 +2987,16 @@ function dynSpreadLiteral(
   lowerer: Lowerer,
   expr: ts.ObjectLiteralExpression,
   type: IrType,
+  conditional = false,
 ): IrExpr | null {
   if (type.kind !== "record") return null;
-  const qualifies = (node: ts.Expression): boolean => dynSpreadSource(lowerer, node);
+  // A conditional spread's keys are runtime state too — which arm runs (and
+  // whether it contributes any key at all) is decided at runtime, and one
+  // contributor per name cannot express a later conditional addressing a
+  // name an earlier contributor already wrote.
+  const qualifies = (node: ts.Expression): boolean =>
+    dynSpreadSource(lowerer, node) ||
+    (conditional && (conditionalSpreadOf(node) !== null || andSpreadOf(lowerer, node) !== null));
   if (
     !expr.properties.nodes.some((prop) => ts.isSpreadAssignment(prop) && qualifies(prop.expression))
   )
@@ -2961,6 +3010,58 @@ function dynSpreadLiteral(
   )
     return null;
   return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), type);
+}
+
+/** A conditional spread source in a checked-dynamic literal, as the dyn
+ * value whose own keys the copy reads. The whole ternary lowers arm by arm
+ * (`c && {...}` is `c ? {...} : undefined` — a primitive contributes no
+ * keys, JS's own spread rule) because an arm's checker CONTEXT is the
+ * enclosing literal's record, which one arm need not complete: a fresh arm
+ * literal builds for its own type and converts. */
+function lowerConditionalDynSource(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const toDyn = (armNode: ts.Expression): IrExpr => {
+    let e = armNode;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (ts.isConditionalExpression(e)) return lowerConditionalDynSource(lowerer, e);
+    if (
+      ts.isBinaryExpression(e) &&
+      e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+      let right = e.right;
+      while (ts.isParenthesizedExpression(right)) right = right.expression;
+      if (ts.isObjectLiteralExpression(right)) {
+        const loc = locOf(e);
+        return {
+          kind: "ternary",
+          cond: lowerer.lowerCondition(e.left),
+          then: toDyn(right),
+          else_: dynUndefinedExpr(loc),
+          type: DYN,
+          loc,
+        };
+      }
+    }
+    // A fresh arm literal builds as the dyn object its keys describe. Asking
+    // the record lowering for it would read the arm's checker CONTEXT — the
+    // enclosing literal's record, which this one arm need not complete — and
+    // fail the arm for fields the other contributor supplies.
+    if (ts.isObjectLiteralExpression(e)) return lowerDynObjectLiteral(lowerer, e);
+    return lowerer.lowerExprExpecting(e, DYN);
+  };
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isConditionalExpression(e)) {
+    const loc = locOf(e);
+    return {
+      kind: "ternary",
+      cond: lowerer.lowerCondition(e.condition),
+      then: toDyn(e.whenTrue),
+      else_: toDyn(e.whenFalse),
+      type: DYN,
+      loc,
+    };
+  }
+  return toDyn(e);
 }
 
 /** A conditional spread's carrier property: `name: value` or shorthand,
