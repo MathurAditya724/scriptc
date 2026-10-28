@@ -2007,39 +2007,14 @@ export function lowerInExpression(
       return lowerer.recordFieldPresent(recv, recv.type.shapeId, key, loc);
     }
     // A declared non-optional field always exists on every value of the
-    // shape — statically true, but folding may only drop a
-    // side-effect-free receiver read.
-    if (
-      recv.kind === "varRef" ||
-      recv.kind === "recordGet" ||
-      recv.kind === "fieldGet" ||
-      pureRecvNode
-    ) {
-      return { kind: "boolLit", value: true, type: BOOL, loc };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-    );
+    // shape — statically true, but a calling receiver (`"k" in make().api`)
+    // must still run exactly once.
+    return staticAnswerAfter(recv, true, loc);
   }
   // Accessor properties answer `in` as own members (Node: true, getter
-  // NOT invoked) — statically true under the same purity discipline as
-  // declared non-optional fields.
+  // NOT invoked) — statically true, with the receiver evaluated once.
   if (shape.fields.some((f) => f.name === `%get:${key}` || f.name === `%set:${key}`)) {
-    if (
-      recv.kind === "varRef" ||
-      recv.kind === "recordGet" ||
-      recv.kind === "fieldGet" ||
-      pureRecvNode
-    ) {
-      return { kind: "boolLit", value: true, type: BOOL, loc };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-    );
+    return staticAnswerAfter(recv, true, loc);
   }
   // Records are ordinary objects: Object.prototype's members are in them.
   const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
@@ -2050,30 +2025,37 @@ export function lowerInExpression(
       "'in' over index-signature keys (read the key and test '!== undefined' instead)",
     );
   }
-  if (
-    recv.kind === "varRef" ||
-    recv.kind === "recordGet" ||
-    recv.kind === "fieldGet" ||
-    pureRecvNode
-  ) {
-    // A null-prototype record (Object.groupBy) has no inherited names.
-    const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
-    if (nullProtoT) {
-      return {
-        kind: "unary",
-        op: "!",
-        operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
-        type: BOOL,
-        loc,
-      };
-    }
-    return { kind: "boolLit", value: inherited, type: BOOL, loc };
+  // A null-prototype record (Object.groupBy) has no inherited names.
+  const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
+  if (nullProtoT) {
+    const answer: IrExpr = {
+      kind: "unary",
+      op: "!",
+      operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
+      type: BOOL,
+      loc,
+    };
+    return staticAnswerAfterWith(recv, answer, loc);
   }
-  lowerer.unsupported(
-    "SC1090",
-    expr,
-    "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-  );
+  return staticAnswerAfter(recv, inherited, loc);
+}
+
+/** A statically-decided `in` answer: a side-effect-free receiver folds away,
+ * while any other receiver (a call result, an effectful read) is still
+ * evaluated exactly once for its effects. */
+function staticAnswerAfter(recv: IrExpr, answer: boolean, loc: SrcLoc): IrExpr {
+  return staticAnswerAfterWith(recv, { kind: "boolLit", value: answer, type: BOOL, loc }, loc);
+}
+
+function staticAnswerAfterWith(recv: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(recv)) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: recv, loc }],
+    result,
+    type: BOOL,
+    loc,
+  };
 }
 
 /** `"k" in u` over a union of fixed record shapes where some arm declares
