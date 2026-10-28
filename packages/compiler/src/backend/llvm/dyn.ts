@@ -260,6 +260,8 @@ export class LlDyn {
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
 
+  private readonly recordViewTables = new Map<string, string>();
+
   constructor(private readonly host: DynHost) {}
 
   /** Journal replay (emit-journal.ts): builds or finds the helper a chunk
@@ -419,7 +421,7 @@ export class LlDyn {
    * dyn view: inside a visit session (`wrapped`), a capsule keeps the view
    * it was first given, so an outer visit can keep reading it. */
   private viewFn(wrapped: boolean): string {
-    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_materialize";
+    const fn = wrapped ? "scr_dyn_visit_view" : "scr_dyn_typed_ref_peek";
     this.host.declare(`declare ptr @${fn}(ptr)`);
     return fn;
   }
@@ -1150,10 +1152,59 @@ export class LlDyn {
    * Class layouts share their base prefix, so unboxing retains the same
    * pointer and virtual dispatch still uses the object's original vtable. */
   private typedRefMatches(B: BlockBuilder, t: IrType): string {
+    return this.typedRefMatchesAny(
+      B,
+      isDynTypedRefType(t)
+        ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
+        : [t],
+    );
+  }
+
+  /** `scr_dyn_record_view(d, sources, n, key, key_len, new)` for
+   * view target `targetId`: the view (+1) of the record a capsule `%d`
+   * holds when its type is one of the target's sources, else NULL. The
+   * sources table lists each source's type key and the byte offsets of
+   * the target's fields in it. */
+  private recordViewCall(B: BlockBuilder, targetId: string): string {
+    const host = this.host;
+    let table = this.recordViewTables.get(targetId);
+    const sources = host.recordViews!.sources(targetId);
+    const target = host.recordsById.get(targetId)!;
+    if (table === undefined) {
+      table = `@sc_rv_${this.recordViewTables.size}`;
+      this.recordViewTables.set(targetId, table);
+      const S = this.S;
+      const entries = sources.map((sourceId, k) => {
+        const source = host.recordsById.get(sourceId)!;
+        const struct = mangleRecordStruct(sourceId);
+        const base = host.nullableUnions.fieldBase(sourceId);
+        const offsets = target.fields.map((field) => {
+          const index = source.fields.findIndex((f) => f.name === field.name) + base;
+          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index}) to ${S})`;
+        });
+        const offsetTable = `${table}_${k}`;
+        this.defs.push(
+          `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
+        );
+        const key = typeKey({ kind: "record", shapeId: sourceId });
+        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+      });
+      this.defs.push(
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        ``,
+      );
+    }
+    const key = typeKey({ kind: "record", shapeId: targetId });
+    host.declare(`declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
+    const view = B.tmp();
+    B.line(
+      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
+    );
+    return view;
+  }
+
+  private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
     this.host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
-    const types: IrType[] = isDynTypedRefType(t)
-      ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
-      : [t];
     let matched = "false";
     for (const type of types) {
       const key = typeKey(type);
@@ -2166,6 +2217,20 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
+      if (t.kind === "record" && host.recordViews?.targets.has(t.shapeId) === true) {
+        // A capsule of a record with all of this type's fields converts
+        // to a view of that record: both names keep one object
+        // (record-views.ts, decision D3).
+        const view = this.recordViewCall(B, t.shapeId);
+        const viewed = B.tmp();
+        B.line(`${viewed} = icmp ne ptr ${view}, null`);
+        const lView = B.newLabel("dc.view");
+        const lOther = B.newLabel("dc.noview");
+        B.condBr(viewed, lView, lOther);
+        B.startBlock(lView);
+        B.terminate(`ret ptr ${view}`);
+        B.startBlock(lOther);
+      }
       // A constructor-function stream (scr_dyn_builtin_stream.c) carries
       // its runtime stream.
       const streamKind = t.kind === "object" ? builtinStreamKind(t.className) : null;

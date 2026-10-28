@@ -171,10 +171,22 @@ const MODELLED: ReadonlySet<IrExpr["kind"]> = new Set<IrExpr["kind"]>([
   "intrinsic",
 ]);
 
+/** Array methods that compare their arguments with the elements by
+ * identity. */
+const IDENTITY_SEARCHES: ReadonlySet<string> = new Set(["indexOf", "includes"]);
+
+/** Map and Set methods whose first argument is a key (or a Set element). */
+const KEYED: ReadonlySet<string> = new Set(["get", "set", "has", "delete", "add"]);
+
+const NO_SLOTS: ReadonlySet<string> = new Set();
+const NO_INDEXES: ReadonlySet<number> = new Set();
+
 interface Occurrence {
   readonly index: FunctionIndex;
   readonly ref: IrExpr & { kind: "varRef" };
   readonly parent: IrExpr | IrStmt;
+  /** The innermost statement the occurrence is in. */
+  readonly stmt: IrStmt | undefined;
   /** Evaluation order in the function. */
   readonly order: number;
   /** The loops around the occurrence, innermost last. */
@@ -239,6 +251,8 @@ class FunctionIndex {
     let order = 0;
     let conditionals = 0;
     const loops: IrStmt[] = [];
+    // The statements being visited, innermost last.
+    const enclosing: IrStmt[] = [];
     const branches: string[] = [];
     const define = (map: Map<string, Definition[]>, id: string, stmt: IrStmt): void => {
       let list = map.get(id);
@@ -259,6 +273,7 @@ class FunctionIndex {
           index: this,
           ref: e,
           parent,
+          stmt: enclosing[enclosing.length - 1],
           order: order++,
           loops: [...loops],
           branches: [...branches],
@@ -309,6 +324,12 @@ class FunctionIndex {
     };
     /** Visits `s`; returns the conditional id of an `if`. */
     const visitStmt = (s: IrStmt): number | null => {
+      enclosing.push(s);
+      const id = visitStmtIn(s);
+      enclosing.pop();
+      return id;
+    };
+    const visitStmtIn = (s: IrStmt): number | null => {
       this.positions.set(s, order);
       switch (s.kind) {
         case "varDecl":
@@ -598,8 +619,13 @@ class SourceAnalysis {
         return [{ callee: `%${e.className}.constructor`, offset: 1 }];
       case "virtualCall": {
         // `targets` are the classes whose own declaration may run.
-        const impls = e.targets?.map((c) => `%${c}.${e.method}`) ?? this.methodImpls.get(e.method);
-        return (impls ?? []).map((callee) => ({ callee, offset: 0 }));
+        const method = e.method;
+        const targets = e.targets;
+        const impls =
+          targets !== undefined
+            ? targets.map((c) => `%${c}.${method}`)
+            : (this.methodImpls.get(method) ?? []);
+        return impls.map((callee) => ({ callee, offset: 0 }));
       }
       default:
         return [];
@@ -797,7 +823,7 @@ class SourceAnalysis {
             ({ callee, offset }) =>
               this.factories.has(callee) &&
               this.shareAll(this.factoryShares.get(callee)) &&
-              [...(this.passed.get(callee) ?? [])].every((i) => {
+              [...(this.passed.get(callee) ?? NO_INDEXES)].every((i) => {
                 const arg = e.args[i - offset];
                 return arg !== undefined && this.fresh(fn, arg);
               }),
@@ -891,10 +917,7 @@ class SourceAnalysis {
    * occurrence's local by the statement right after the occurrence's. */
   private killAfter(at: Occurrence): number | null {
     const index = at.index;
-    let node: IrExpr | IrStmt | undefined = at.parent;
-    while (node !== undefined && !index.positions.has(node as IrStmt))
-      node = index.parents.get(node as IrExpr);
-    const next = node === undefined ? undefined : index.next.get(node as IrStmt);
+    const next = at.stmt === undefined ? undefined : index.next.get(at.stmt);
     if (next?.kind !== "assign" || next.localId !== at.ref.localId) return null;
     if (!isUndefined(next.value) && !this.fresh(index.fn, next.value)) return null;
     return index.positions.get(next) ?? null;
@@ -1115,7 +1138,7 @@ class SourceAnalysis {
         const slots: string[] = [];
         for (const { callee, offset } of this.callees(e)) {
           slots.push(`r:${callee}`);
-          for (const i of this.returnedParams.get(callee) ?? []) {
+          for (const i of this.returnedParams.get(callee) ?? NO_INDEXES) {
             const arg = e.args[i - offset];
             if (arg !== undefined) slots.push(...this.slotsOf(fn, arg));
           }
@@ -1280,7 +1303,7 @@ class SourceAnalysis {
           const reached = new Map<string, string | null>([[param, null]]);
           const queue = [param];
           while (queue.length > 0)
-            for (const to of aliases.get(queue.pop()!) ?? [])
+            for (const to of aliases.get(queue.pop()!) ?? NO_SLOTS)
               if (!reached.has(to)) {
                 reached.set(to, null);
                 queue.push(to);
@@ -1311,7 +1334,7 @@ class SourceAnalysis {
     while (queue.length > 0) {
       const slot = queue.pop()!;
       if (targets.includes(slot)) return true;
-      for (const to of aliases.get(slot) ?? [])
+      for (const to of aliases.get(slot) ?? NO_SLOTS)
         if (!seen.has(to)) {
           seen.add(to);
           queue.push(to);
@@ -1340,7 +1363,7 @@ class SourceAnalysis {
       // The edges of the slot, and those of the slots whose elements it is.
       let prefix = "";
       for (let inner = slot; ; inner = inner.slice(2)) {
-        for (const to of this.edges.get(inner) ?? []) pin(prefix + to, origin);
+        for (const to of this.edges.get(inner) ?? NO_SLOTS) pin(prefix + to, origin);
         if (!inner.startsWith("c:")) break;
         prefix += "c:";
       }
@@ -1489,6 +1512,19 @@ class SourceAnalysis {
           reason: `an array that may be an InlineArray field's reaches ${what}, where writes are not checked`,
         });
     };
+    // Each read of an inline field may give another array, where Node.js
+    // gives the field's one array every time.
+    const identity = (value: IrExpr, loc: SrcLoc): void => {
+      if (check === null) return;
+      const origin = this.origin(fn, value);
+      if (origin !== undefined)
+        check({
+          loc,
+          origin,
+          reason:
+            "an array that may be an InlineArray field's is compared by identity, and each read of the field may give another array (compare a copy made with slice(), or compare the elements)",
+        });
+    };
     const args = (call: IrExpr & { args: IrExpr[] }): void => {
       const callees = this.callees(call);
       for (const { callee, offset } of callees) {
@@ -1513,8 +1549,19 @@ class SourceAnalysis {
         case "virtualCall":
           args(e);
           break;
+        case "bin":
+          if (e.op === "===" || e.op === "!==") {
+            identity(e.left, e.loc);
+            identity(e.right, e.loc);
+          }
+          break;
+        case "unionEq":
+          identity(e.left, e.loc);
+          identity(e.right, e.loc);
+          break;
         case "arrIntrinsic": {
           if (!ARR_READS.has(e.method)) write(e.receiver, e.loc, `'${e.method}'`);
+          if (IDENTITY_SEARCHES.has(e.method)) for (const a of e.args) identity(a, e.loc);
           // Copies hold the receiver's elements, and the arguments they add.
           const copy =
             ARR_COPIES.has(e.method) || e.method === "splice" || e.method === "spliceInsert";
@@ -1528,6 +1575,8 @@ class SourceAnalysis {
         }
         case "mapIntrinsic":
         case "setIntrinsic":
+          // Keys and Set elements are compared by identity.
+          if (e.args[0] !== undefined && KEYED.has(e.method)) identity(e.args[0], e.loc);
           if (e.method === "set" || e.method === "add")
             for (const a of e.args) store(e.receiver, a);
           else if (e.method === "clone" || e.method === "keySet" || e.method === "valueSet")
@@ -1544,6 +1593,7 @@ class SourceAnalysis {
           break;
         case "mapNew":
           for (const { key, value } of e.seed ?? []) {
+            identity(key, e.loc);
             store(this.site(fn, e), key);
             store(this.site(fn, e), value);
           }

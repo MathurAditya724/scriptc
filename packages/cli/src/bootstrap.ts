@@ -74,7 +74,11 @@ async function tryFastPath(): Promise<number | null> {
     values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
-    hasNodeIslandFlags(values)
+    hasNodeIslandFlags(values) ||
+    // The full compiler writes the representation report and keys the heap
+    // census build (backend/llvm/repr-report.ts, heap-census.ts).
+    (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
   )
     return null;
   const backend = values.backend;
@@ -140,7 +144,9 @@ async function tryFastPath(): Promise<number | null> {
     backend: "llvm",
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
+    ...(values.static ? { staticLink: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
+    ...(values["large-pages"] ? { largePages: true as const } : {}),
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
@@ -224,7 +230,9 @@ async function coverageFastPath(
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
     values.emit !== undefined ||
     values.strip ||
+    values.static ||
     values["detached-exit"] ||
+    values["large-pages"] ||
     values["target-cpu"] !== undefined ||
     values["cpu-dispatch"] !== undefined ||
     values.lib ||

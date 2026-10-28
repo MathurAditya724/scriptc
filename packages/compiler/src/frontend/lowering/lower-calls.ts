@@ -556,6 +556,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const timeoutOptional = lowerer.lowerTimeoutMethodCall(expr, expr.expression);
     if (timeoutOptional) return timeoutOptional;
   }
+  // `Error.captureStackTrace?.(this, this.constructor)`: Node always has it.
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    (expr.questionDotToken || expr.expression.questionDotToken)
+  ) {
+    const captured = lowerErrorCaptureStackTraceCall(lowerer, expr, expr.expression);
+    if (captured) return captured;
+  }
   // `req.session?.m(...)` remains absent on compatibility requests. Live
   // `req.stream` calls now pass through the normal optional-chain and h2
   // stream lowering using lowerServerProperty's checked getter.
@@ -6102,6 +6110,24 @@ export function lowerPromiseMethodCall(
       const fulfilledAbsent = isAbsentHandler(fulfilledNode);
       const rejectedAbsent = isAbsentHandler(rejectedNode);
       const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      // An untyped call in JavaScript whose receiver arrived as a typed
+      // promise (a function instantiated with one): Promise.prototype.then
+      // over the promise as a checked-dynamic value, which shares its
+      // identity.
+      if (resultT?.kind !== "promise" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+        return {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(receiver, DYN),
+          method: "then",
+          calleeName: ts.getTextOfNode(access),
+          args: [
+            lowerer.lowerExprExpecting(fulfilledNode, DYN),
+            lowerer.lowerExprExpecting(rejectedNode, DYN),
+          ],
+          type: DYN,
+          loc,
+        };
+      }
       if (resultT?.kind !== "promise") {
         lowerer.noLowering(
           "then with these handlers",
@@ -8724,7 +8750,13 @@ function lowerObjectStaticCall(
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
-      return value; // fresh — freeze is identity here, honestly
+      // A fresh literal can still reach untyped code, which observes and
+      // must honor its frozen state: records and arrays keep the bit.
+      if (freezableRecordType(lowerer, value.type))
+        return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+      if (value.type.kind === "array")
+        return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+      return value;
     }
     if (
       value.type.kind === "string" ||

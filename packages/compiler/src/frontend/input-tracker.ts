@@ -125,6 +125,23 @@ let synchronousTracker: FrontendInputTracker | undefined;
 export class FrontendInputTracker {
   private readonly probes = new Map<string, FrontendInputProbe>();
   private stable = true;
+  /** The digests `previous` recorded for files read with a settled identity. */
+  private readonly known = new Map<string, { identity: string; digest: string }>();
+
+  /** `previous` is the snapshot of an earlier run whose cache entry is being
+   * rebuilt: a file whose settled identity has not changed since then has the
+   * content it hashed, so its digest is not computed again. */
+  constructor(previous?: FrontendInputSnapshot) {
+    for (const probe of previous?.probes ?? [])
+      if (probe.op === "file" && probe.identity !== undefined)
+        this.known.set(probe.path, { identity: probe.identity, digest: probe.digest });
+  }
+
+  /** The digest an earlier run recorded for `path` with this identity. */
+  knownDigest(path: string, identity: string): string | undefined {
+    const known = this.known.get(path);
+    return known?.identity === identity ? known.digest : undefined;
+  }
 
   run<T>(fn: () => T): T {
     const parent = activeTracker.getStore();
@@ -252,7 +269,11 @@ export function trackedReadFile(path: string): string | null {
   if (virtual !== undefined) return virtual;
   try {
     const { text, identity } = readWithIdentity(path);
-    const digest = frontendSourceDigest(text);
+    const known =
+      identity === null
+        ? undefined
+        : (synchronousTracker ?? activeTracker.getStore())?.knownDigest(path, identity);
+    const digest = known ?? frontendSourceDigest(text);
     record(
       identity === null ? { op: "file", path, digest } : { op: "file", path, digest, identity },
     );

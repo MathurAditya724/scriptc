@@ -3,8 +3,8 @@ import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import type { BytesHeader } from "./bytes-headers.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
-import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
+import type { LlvmEmitterContext, LlValue, OffsetIndex } from "./expr-context.js";
+import { F64_INF, exactIndexLines, exactOffsetIndexLines, f64Lit, sizeToDouble } from "./common.js";
 import { alwaysExactInteger, exactInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
@@ -77,6 +77,27 @@ export function emitIntegerLoopIndex(host: LlvmEmitterContext, expr: IrExpr): st
   return index;
 }
 
+/** The base and offset of a sum `base + c`, `c + base` or `base - c`,
+ * where `base` is a number local and `c` an integer literal of magnitude
+ * below 2^31, given the operand values the sum was computed from. Null for
+ * other sums. */
+export function offsetIndex(expr: IrExpr, left: LlValue, right: LlValue): OffsetIndex | null {
+  if (expr.kind !== "bin" || expr.type.kind !== "f64" || (expr.op !== "+" && expr.op !== "-"))
+    return null;
+  const literal = (e: IrExpr): number | null =>
+    e.kind === "numLit" && Number.isInteger(e.value) && Math.abs(e.value) < 2 ** 31
+      ? e.value
+      : null;
+  const local = (e: IrExpr): boolean => e.kind === "varRef" && e.type.kind === "f64";
+  const constant = literal(expr.right);
+  if (constant !== null && local(expr.left))
+    return { base: left.name, offset: expr.op === "+" ? constant : -constant };
+  const leading = literal(expr.left);
+  if (expr.op === "+" && leading !== null && local(expr.right))
+    return { base: right.name, offset: leading };
+  return null;
+}
+
 export function emitBytesIndex(
   host: LlvmEmitterContext,
   receiver: string,
@@ -134,10 +155,33 @@ export function emitBytesIndex(
     B.line(`${ok} = and i1 ${nanIndex.ordered}, ${below}`);
     wide = nanIndex.wide;
   } else {
-    const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
-    for (const line of exact.lines) B.line(line);
-    ok = exact.ok;
-    wide = exact.wide;
+    const offset = value.offsetIndex;
+    if (offset) {
+      const exact = exactOffsetIndexLines(offset.base, offset.offset, len, host.sizeType, () =>
+        B.tmp(),
+      );
+      for (const line of exact.lines) B.line(line);
+      // A fractional base: the sum itself decides, as it would without the
+      // base's conversion.
+      const from = B.currentLabel();
+      const sum = B.newLabel("bytes.index.sum");
+      const join = B.newLabel("bytes.index.join");
+      B.condBr(exact.integral, join, sum);
+      B.startBlock(sum);
+      const whole = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+      for (const line of whole.lines) B.line(line);
+      B.br(join);
+      B.startBlock(join);
+      ok = B.tmp();
+      wide = B.tmp();
+      B.line(`${ok} = phi i1 [ ${exact.ok}, %${from} ], [ ${whole.ok}, %${sum} ]`);
+      B.line(`${wide} = phi i64 [ ${exact.wide}, %${from} ], [ ${whole.wide}, %${sum} ]`);
+    } else {
+      const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+      for (const line of exact.lines) B.line(line);
+      ok = exact.ok;
+      wide = exact.wide;
+    }
   }
   const invalid = B.newLabel("bytes.index.invalid");
   const valid = B.newLabel("bytes.index.valid");

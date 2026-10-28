@@ -1486,6 +1486,10 @@ function liveRecordOps(
   G.startBlock(bad);
   G.terminate(`unreachable`);
 
+  // Only a program that writes through a dynamic view needs the store
+  // hook (and its checked conversions), as for the commit adapter.
+  const setDefs = host.liveViewsReadOnly ? [] : liveRecordSet(host, t, `${snapshot}_set`, fields);
+
   const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
   host.resolveThunkDefs.push(
     `define internal zeroext i1 @${has}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field presence of ${typeKey(t)}`,
@@ -1496,11 +1500,88 @@ function liveRecordOps(
     G.render(),
     `}`,
     ``,
+    ...setDefs,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
-    // Mutable: the runtime fills the trailing key-array slot on first use.
-    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null }`,
+    // Mutable: the runtime fills the key-array slot on first use.
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null, ptr ${setDefs.length ? `@${snapshot}_set` : "null"} }`,
     ``,
   );
+}
+
+/** The `set` hook of a live record's ops table: stores a dynamic write of
+ * present field `index` into the native record in place, so the capsule
+ * never becomes a snapshot for it. A value the field type does not accept
+ * answers false with no side effects, leaving the snapshot path to raise
+ * the commit's diagnostic; an inline union field always does. */
+function liveRecordSet(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "record" },
+  sym: string,
+  fields: readonly IrRecordShape["fields"][number][],
+): string[] {
+  const shape = host.recordsById.get(t.shapeId)!;
+  const struct = mangleRecordStruct(t.shapeId);
+  const S = new BlockBuilder();
+  const labels = fields.map(() => S.newLabel("live.record.store"));
+  const refuse = S.newLabel("live.record.refuse");
+  S.terminate(
+    `switch ${host.sizeType} %i, label %${refuse} [ ${fields
+      .map((_, position) => `${host.sizeType} ${position}, label %${labels[position]}`)
+      .join(" ")} ]`,
+  );
+  fields.forEach((field, position) => {
+    S.startBlock(labels[position]!);
+    const inline = host.inlineUnions.record(field.type);
+    if (inline) {
+      S.br(refuse);
+      return;
+    }
+    const fits = S.tmp();
+    S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(field.type)}(ptr %v)`);
+    const check = S.newLabel("live.record.check");
+    S.condBr(fits, check, refuse);
+    S.startBlock(check);
+    const valueTy = host.llType(field.type);
+    const next = S.tmp();
+    S.line(
+      `${next} = call ${valueTy === "i1" ? "zeroext " : ""}${valueTy} @${host.dyn.dynCheckHelper(field.type)}(ptr %v, ptr null)`,
+    );
+    // A conversion that throws has already raised the write's error.
+    const pending = S.tmp();
+    for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
+    const write = S.newLabel("live.record.write");
+    const done = S.newLabel("live.record.done");
+    S.condBr(pending, done, write);
+    S.startBlock(write);
+    const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+    const fieldPtr = S.tmp();
+    S.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
+    const fieldTy = llFieldType(field.type, false);
+    let stored = next;
+    if (fieldTy === "i8") {
+      stored = S.tmp();
+      S.line(`${stored} = zext i1 ${next} to i8`);
+    }
+    if (isRefCounted(field.type)) {
+      const old = S.tmp();
+      S.line(`${old} = load ptr, ptr ${fieldPtr}`);
+      S.line(`store ptr ${stored}, ptr ${fieldPtr} ; takes ownership`);
+      S.line(`call void ${releaseSym(host.shapeHost, field.type)}(ptr ${old})`);
+    } else {
+      S.line(`store ${fieldTy} ${stored}, ptr ${fieldPtr}`);
+    }
+    S.br(done);
+    S.startBlock(done);
+    S.terminate(`ret i1 true`);
+  });
+  S.startBlock(refuse);
+  S.terminate(`ret i1 false`);
+  return [
+    `define internal zeroext i1 @${sym}(ptr %p, ${host.sizeType} %i, ptr %v) ${FN_ATTRS} { ; live field store into ${typeKey(t)}`,
+    S.render(),
+    `}`,
+    ``,
+  ];
 }
 
 /** `@<snapshot>_rops` for a shape with orderVariants: a record-ops table
@@ -1526,7 +1607,7 @@ function liveRecordOrderSelect(
     B.render(),
     `}`,
     ``,
-    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select }`,
+    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select, ptr null }`,
     ``,
   );
 }

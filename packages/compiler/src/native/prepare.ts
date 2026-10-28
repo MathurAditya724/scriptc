@@ -217,6 +217,8 @@ function implementationIdentity(toolchain: NativeToolchain): string {
 const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_CACHE_DIR",
   "SCRIPTC_CACHE_MAX_MB",
+  // The shared checker server answers as the build's own checker does.
+  "SCRIPTC_CHECKER_SERVER",
   "SCRIPTC_EMIT_WORKERS",
   "SCRIPTC_EMIT_WORKER_FUNCTIONS",
   "SCRIPTC_TIMING",
@@ -370,6 +372,8 @@ export function prepareNativeExecutable(
   const exclusions = { outputPaths, outputDirectories: [...directories] };
   const irInput = process.env[BOOTSTRAP_IR_INPUT] ?? "";
   let key: string | null = null;
+  // The entry this build replaces: its probes give the digests of unchanged files.
+  let previous: FrontendInputSnapshot | undefined;
   if (cache !== null && irInput === "" && provenanceSources() === null) {
     try {
       key = contentDigest(
@@ -389,6 +393,7 @@ export function prepareNativeExecutable(
         timing("frontend-cache-hit");
         return cached.input;
       }
+      if (cached !== null) previous = cached.stale.probes;
       const equivalent =
         cached === null || outputKind === "ir"
           ? null
@@ -403,7 +408,7 @@ export function prepareNativeExecutable(
     }
   }
   timing("frontend-cache-miss");
-  const tracker = new FrontendInputTracker();
+  const tracker = new FrontendInputTracker(previous);
   const prepared =
     irInput !== ""
       ? preparedFromIr(irInput, entry, options)
@@ -435,6 +440,7 @@ export function prepareNativeExecutable(
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
           functionWorkers: emitWorkers(),
           forkPrimitives: emitForkPrimitives(),
+          timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...targetCpuField(options.targetCpu),
@@ -449,7 +455,10 @@ export function prepareNativeExecutable(
     llvm,
     ir,
     sidecarJson: null,
-    features: executableLinkFeatures(prepared.mod),
+    features: executableLinkFeatures(
+      prepared.mod,
+      options.largePages === true && outputKind === "exe",
+    ),
     sources: [...prepared.sourceTexts],
     ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),
   };
@@ -548,6 +557,7 @@ export function prepareNativeLibrary(
     wasi: toolchain.target.platform === "wasi",
     objectAudit: options.sanitize === true,
     sanitizeAttributes: options.sanitize === true,
+    timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
   });
   timing("llvm-emit");

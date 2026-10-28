@@ -31,6 +31,7 @@ import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
 import { INT32_RANGE, analyzeIntegerRangeFacts } from "../../ir/integer-ranges.js";
+import { beginLoopEntryVersions } from "./loop-entry-versions.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import { findInt32Locals } from "./int32-locals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -246,6 +247,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
+  beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);

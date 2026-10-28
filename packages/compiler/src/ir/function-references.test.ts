@@ -227,6 +227,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "threadSlotKeys[]": "other",
   "foreignElementKeys[]": "other",
   "freezableArrays[]": "other",
+  "sloppyDynWrites[]": "other",
   "inferredFactFiles[].file": "other",
   "inferredFactFiles[].pkg": "other",
   "declOrigins[]": "other",

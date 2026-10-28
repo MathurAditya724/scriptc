@@ -11,6 +11,7 @@ import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../i
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -438,11 +439,13 @@ export function emitOperatorExpr(
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
           // The integer of an exact integer or NaN, for index and loop guards.
           const nan = emitNanArithmetic(host, e, l, r, li, ri);
-          if (wrapped !== undefined || wideInteger || nan) {
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
             if (nan) Object.assign(value, nan);
             if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
         } else {
@@ -520,6 +523,29 @@ export function emitOperatorExpr(
       // Expression-position ++/-- over an f64 binding (locals, module
       // globals, capture boxes): read, write ±1, yield old (postfix) or
       // new (prefix).
+      const shadow = host.integerLoopBindings.get(e.localId);
+      if (shadow !== undefined && host.speculation?.increments?.has(e)) {
+        // A proven integer loop's shadow: the loop range holds every value
+        // the binding takes, so the step cannot overflow.
+        const old = B.tmp();
+        const next = B.tmp();
+        const number = B.tmp();
+        B.line(`${old} = load i64, ptr ${shadow.slot}`);
+        B.line(`${next} = ${e.op === "+" ? "add" : "sub"} nsw i64 ${old}, 1`);
+        B.line(`store i64 ${next}, ptr ${shadow.slot}`);
+        const value = e.prefix ? next : old;
+        B.line(`${number} = sitofp i64 ${value} to double`);
+        return {
+          name: number,
+          type: e.type,
+          integer: {
+            name: value,
+            type: "i64",
+            signed: true,
+            range: shadow.range ?? { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+          },
+        };
+      }
       const b = host.binding(e.localId);
       if (host.int32Locals.has(e.localId)) {
         if (!host.int32LocalWrites.has(e))

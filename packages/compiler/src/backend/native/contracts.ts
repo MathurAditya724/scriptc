@@ -129,6 +129,14 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** `--large-pages`: compiles scr_text_pages.c. */
+  largePages?: boolean;
+  /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: compiles scr_abort.c, unless the
+   * program compiles the fetch unit, which has them. */
+  abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:

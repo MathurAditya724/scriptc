@@ -500,6 +500,35 @@ console.log(list.items === items);
   expect(result.messages.join("\n")).toContain("compared by identity");
 });
 
+test("arrays a field's reads may be are not compared by identity", async () => {
+  const program = (use: string) => `
+class Item implements ProgramLifetime {}
+class List implements ProgramLifetime {
+  readonly items: InlineArray<Item>;
+  constructor(items: readonly Item[]) {
+    this.items = items;
+  }
+}
+const list = new List([new Item()]);
+const a = list.items;
+const b = list.items;
+${use}
+`;
+  for (const use of [
+    "console.log(a === b);",
+    "console.log([a].indexOf(b));",
+    "console.log(new Set([a]).has(b));",
+    "const seen = new Map<readonly Item[], number>();\nseen.set(a, 1);\nconsole.log(seen.get(b));",
+  ]) {
+    const result = await build(program(use));
+    expect(result.ok, use).toBe(false);
+    expect(result.messages.join("\n"), use).toContain("is compared by identity");
+  }
+  // Reading the elements and the length is not a comparison.
+  const reads = await build(program("console.log(a.length === b.length, a[0] === b[0]);"));
+  expect(reads.ok).toBe(true);
+});
+
 test("InlineArray is checked on instance fields only", async () => {
   const result = await build(`
 class Item implements ProgramLifetime {}

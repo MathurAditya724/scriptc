@@ -1,6 +1,9 @@
 import type { TargetCpu } from "../target-cpu.js";
+import { loopEntryInlines } from "./loop-entry-versions.js";
 import type { FunctionLayout } from "./function-layout.js";
+import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
 import { jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
@@ -136,6 +139,8 @@ import {
 } from "./int32-abi.js";
 import { type Int32Local } from "./int32-locals.js";
 import { findIntegerClones, NO_INTEGER_CLONES, type IntegerClones } from "./integer-clones.js";
+import { writeRepresentationReport } from "./repr-report.js";
+import { heapCensusOf, type HeapCensus } from "./heap-census.js";
 import { exactInteger, narrowInteger, widenInteger, type LlInteger } from "./integer-values.js";
 import { findInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
@@ -362,6 +367,7 @@ import {
 import { children, type Node } from "./region-ir.js";
 import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
+import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
@@ -525,6 +531,11 @@ export interface LlvmTargetOptions {
   forkPrimitives?: ForkPrimitives | undefined;
   /** Functions to write first, by tier (function-layout.ts). */
   functionLayout?: FunctionLayout;
+  /** Marks emission's serial steps: `llvm-emit-rewrites` after the module
+   * passes, `llvm-emit-int32` after int32 selection, and
+   * `llvm-emit-analyses` after the emitter's whole-program analyses. The
+   * caller's next phase is the function bodies. */
+  timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
@@ -713,6 +724,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   };
   // Keep source storage intact for debugger inspection in dev builds.
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
+  const timing = options.timing ?? (() => {});
   const passed = versionParameters(
     addRecordResultEntries(
       scalarizeLiteralResults(
@@ -747,6 +759,7 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
       ),
     ),
   );
+  timing("llvm-emit-rewrites");
   let emitted = selectInt32Arrays(passed, proven, resultEntryTargets);
   let prepared = rounds.last;
   // A proof that revised functions analyzed the module of the functions it
@@ -768,7 +781,15 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   }
   if (process.env["SCRIPTC_INT32_VERIFY"] === "1")
     verifyInt32Selection(passed, emitted, prepared?.mod === emitted ? prepared : null);
-  return new LlEmitter(emitted, options, null, prepared?.mod === emitted ? prepared : null);
+  timing("llvm-emit-int32");
+  const emitter = new LlEmitter(
+    emitted,
+    options,
+    null,
+    prepared?.mod === emitted ? prepared : null,
+  );
+  timing("llvm-emit-analyses");
+  return emitter;
 }
 
 /** SCRIPTC_INT32_VERIFY=1: throws unless the selection with revisions
@@ -811,7 +832,9 @@ function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
   for (let excluded = options.unwindExcluded ?? new Set<string>(); ;) {
     const emitter = moduleEmitter(input, { ...options, unwindExcluded: excluded });
     try {
-      return emitter.emitParts();
+      const parts = emitter.emitParts();
+      writeRepresentationReport(emitter);
+      return parts;
     } catch (error) {
       if (!(error instanceof UnwindAbiViolation)) throw error;
       const names = new Set(excluded);
@@ -1409,6 +1432,8 @@ export class LlEmitter {
   readonly dyn: LlDyn;
   /** Explicit callback boundary for standalone layout and walker stages. */
   readonly shapeHost: DynHost;
+  /** The record view plan's target set (record-views.ts), shared by reference. */
+  private recordViewTargets: Set<string> | null = null;
   /** External declarations, in first-use order. */
   readonly decls = new Set<string>();
   /** Declared functions referenced as values: each needs an env-signature
@@ -1453,6 +1478,9 @@ export class LlEmitter {
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;
   readonly callLifetimes: CallLifetimes;
+  /** The locals whose value never leaves its frame (frame-escapes.ts), for
+   * class instances with reference fields in frame storage. */
+  frameEscapes: FrameEscapes | null = null;
   readonly constantCallbacks: Map<string, Map<string, string>>;
   currentConstantCallbacks: ReadonlyMap<string, string> = new Map();
   /** The current function's running maximum and minimum updates, whose
@@ -1627,6 +1655,8 @@ export class LlEmitter {
   readonly inlineUnions: InlineUnionFields;
   /** Unions whose values are nullable arm pointers (nullable-unions.ts). */
   readonly nullableUnions: NullableUnions;
+  /** The counters of a build instrumented for the heap census, or null. */
+  readonly heapCensus: HeapCensus | null;
   /** The union table without nullable unions: the stack-box analyses. */
   readonly boxedUnionsById: Map<string, IrUnionDef>;
   readonly recordsById = new Map<string, IrRecordShape>();
@@ -1719,6 +1749,8 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** IrModule.sloppyDynWrites: untyped writes in sloppy-mode code. */
+  readonly sloppyDynWrites: ReadonlySet<string>;
   /** IrModule.foreignElementKeys: element keys whose arrays can hold
    * SCR_ARR_FOREIGN elements. */
   readonly foreignElementKeys: ReadonlySet<string>;
@@ -1787,6 +1819,9 @@ export class LlEmitter {
     ran?: string;
     /** Writes that speculate a rewritten value (rewriteSpeculable). */
     values?: ReadonlyMap<IrStmt, SpeculativeValue>;
+    /** A proven integer loop's expression-position `++`/`--` of its
+     * shadowed bindings (ProvenLoopPlan.increments). */
+    increments?: ReadonlySet<IrExpr>;
   } | null = null;
   /** Speculative loop sites numbered so far in the module. */
   speculativeLoopSites = 0;
@@ -2020,6 +2055,8 @@ export class LlEmitter {
       options.debugSources === undefined,
       this.nodeIndex,
     );
+    this.heapCensus = heapCensusOf(mod, this.nullableUnions);
+    for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
     this.mockTimers = this.runtimeFeatures.mockTimers;
     this.debug =
       options.debugSources === undefined
@@ -2033,6 +2070,7 @@ export class LlEmitter {
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.untypedIntegrity = mod.untypedIntegrity === true;
+    this.sloppyDynWrites = new Set(mod.sloppyDynWrites ?? []);
     this.liveViewsReadOnly =
       mod.lib === undefined &&
       !this.untypedIntegrity &&
@@ -2122,7 +2160,7 @@ export class LlEmitter {
       (options.targetTriple
         ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
         : process.platform === "linux")
-        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded)
+        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded, this.nodeIndex)
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
@@ -2221,6 +2259,7 @@ export class LlEmitter {
             (type.kind !== "union" ||
               this.nullableUnions.single(type.unionId)?.arm.kind !== "string"),
           this.walkBorrowsByFunction.get(fn.name) ?? new Set(),
+          this.nodeIndex,
         );
         if (rebound.size === 0) continue;
         this.reboundByFunction.set(fn.name, rebound);
@@ -2246,6 +2285,7 @@ export class LlEmitter {
       },
       (wrap) => this.borrowableNullableWrap(wrap) === "ref",
     );
+    if (this.stackObjects) this.frameEscapes = analyzeFrameEscapes(this.mod);
     if (this.debug === null) {
       const strings = findLentStringParameters(this.fnByName, this.callLifetimes);
       this.lendingFacts = {
@@ -2381,6 +2421,7 @@ export class LlEmitter {
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
+      heapCensus: this.heapCensus,
     };
     // An instance of a class that extends Array is an array: a slot of its
     // element array type can hold it, and the collector visits it there as
@@ -2414,6 +2455,20 @@ export class LlEmitter {
           changed = true;
         }
       }
+    }
+    // Planned before any host copies the shape host (record-views.ts).
+    {
+      const views = planRecordViews(mod, {
+        traced: (id) => this.tracedShapes.has(`record:${id}`),
+        // A tagged shape's values share field reads with the other arms of
+        // its shape union.
+        excluded: (id) =>
+          this.nullableUnions.shapeNumber(id) !== 0 ||
+          this.publishedTypes?.recordGuarded(id) === true ||
+          mod.workers === true,
+      });
+      this.shapeHost.recordViews = views;
+      this.recordViewTargets = views.targets as Set<string>;
     }
     this.walkers = new LlWalkers(this.shapeHost);
     this.dyn = new LlDyn(this.shapeHost);
@@ -2535,8 +2590,16 @@ export class LlEmitter {
       if (this.arenas !== null) {
         this.shapeHost.arenaShapes = this.arenas.shapes;
         this.shapeHost.arenaClasses = this.arenas.classes;
+        this.shapeHost.arenasClosed = this.arenas.allClosed;
       }
     }
+    // Arena shapes are known only now; the plan's target set is shared by
+    // every host that copied the shape host, so dropping them here reaches
+    // all of them.
+    const arenaShapes = this.shapeHost.arenaShapes;
+    const viewTargets = this.recordViewTargets;
+    if (arenaShapes !== undefined && viewTargets !== null)
+      for (const id of arenaShapes) viewTargets.delete(id);
     for (const [name, rec] of RUNTIME_ERROR_CLASSES) {
       const meta = this.classMeta.get(name);
       if (!meta) break; // hand-written IR without the builtin defs: no stamps
@@ -2665,7 +2728,8 @@ export class LlEmitter {
   emitParts(): string[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    return this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    const out = this.cpuDispatch ? cloneForCpuDispatch(bridged) : bridged;
+    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
   }
 
   /** The dispose-observer gates the emitted frees and record writers test
@@ -4034,8 +4098,10 @@ export class LlEmitter {
   emitDirectCall(line: string, callee: string): boolean {
     const B = this.B;
     // A small leaf called only from loops inlines into each of them, past
-    // LLVM's cost threshold (loop-callees.ts). Debug builds keep the call.
-    if (this.debug === null && this.loopCallees.has(callee)) {
+    // LLVM's cost threshold (loop-callees.ts), and so does a function called
+    // only from a loop's entry-range version (loop-entry-versions.ts).
+    // Debug builds keep the call.
+    if (this.debug === null && (this.loopCallees.has(callee) || loopEntryInlines(this, callee))) {
       const comment = line.indexOf(" ; ");
       line =
         comment < 0
@@ -4710,6 +4776,7 @@ export class LlEmitter {
       `${p} = getelementptr inbounds %${classStructSym(className)}, ptr ${objName}, i64 0, i32 ${index}`,
     );
     this.markFieldPointer(p, field);
+    this.heapCensus?.countAccess((line) => this.B.line(line), className, field);
     if (compressed) this.compressedFieldPtrs.add(p);
     return { ptr: p, type, inline: this.inlineUnions.classField(className, field), compressed };
   }
@@ -4861,10 +4928,25 @@ export class LlEmitter {
       throw new InternalCompilerError(
         `llvm emitter bug: unknown field ${field} on shape ${shapeId}`,
       );
-    const p = this.B.tmp();
-    this.B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + this.nullableUnions.fieldBase(shapeId)}`,
-    );
+    const base = this.nullableUnions.fieldBase(shapeId);
+    let p: string;
+    if (this.shapeHost.recordViews?.targets.has(shapeId) === true) {
+      p = recordViewFieldPtr(
+        this.B,
+        this.sizeType,
+        mangleRecordStruct(shapeId),
+        objName,
+        idx + base,
+        idx,
+        (decl) => this.declare(decl),
+        this.rcMode === undefined,
+      );
+    } else {
+      p = this.B.tmp();
+      this.B.line(
+        `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + base}`,
+      );
+    }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };
   }

@@ -18,7 +18,12 @@ import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
 import { dispatchesCall, INTEGER_DISPATCH_SUFFIX } from "./integer-clones.js";
-import { canStackObject, emitStackObject } from "./stack-objects.js";
+import {
+  canStackObject,
+  emitStackObject,
+  frameClass,
+  type StackObjectSource,
+} from "./stack-objects.js";
 import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js";
 import {
   mangleAsyncAdoptCall,
@@ -130,6 +135,19 @@ export function emitCallExpr(
       if (borrowed) host.frames.push([]);
       let suffixes: Writes[] | undefined;
       const args = e.args.map((a, index) => {
+        // A fresh instance of a frame class that the parameter keeps in the
+        // callee's frame (frame-escapes.ts) is built in the caller's frame;
+        // the call's statement frame releases its reference fields.
+        if (
+          a.kind === "new" &&
+          host.frameEscapes?.parameterStays(e.callee, index) === true &&
+          frameClass(host, a.className)
+        ) {
+          const value = emitStackObject(host, a as StackObjectSource, (fields) => {
+            for (const field of fields) host.ownSlot(field.ptr, field.type);
+          });
+          return host.markImmortal(value);
+        }
         if (borrowed?.has(index)) {
           // A heap-borrowing helper may retain or return its argument.
           // Only projection-only parameters may see an unowned stack box,
@@ -1126,6 +1144,7 @@ export function emitCallExpr(
       }
       const o = B.tmp();
       B.line(`${o} = call ptr @${host.allocSym(mangleClassNew(e.className), e)}(${count})`);
+      host.heapCensus?.countNew((line) => B.line(line), e.className);
       const out = host.own({ name: o, type: e.type });
       emitConstruction(host, e, o, ctor);
       return out;

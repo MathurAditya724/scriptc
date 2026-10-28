@@ -32,6 +32,25 @@ export function nativeProgramPartitions(llvmBytes: number): number {
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));
 }
 
+/** LLVM text that an optimized one-partition program generates code for on
+ * one thread, the LLVM text per code generation part, and the most parts. */
+const SINGLE_CODEGEN_BYTES = 128 * 1024;
+const CODEGEN_PART_BYTES = 64 * 1024;
+const MAX_CODEGEN_PARTS = 8;
+
+/** Code generation parts for an optimized executable object that
+ * nativeProgramPartitions keeps as one partition. The helper optimizes the
+ * module whole, as for a single output, and then generates code for the parts
+ * concurrently (`--split codegen`), so the generated code does not change.
+ * Returns 1 for modules of at most SINGLE_CODEGEN_BYTES and for partitioned
+ * ones. The count is a power of two that depends only on the module's size,
+ * so artifacts never vary with the host. */
+export function nativeCodegenParts(llvmBytes: number): number {
+  if (llvmBytes <= SINGLE_CODEGEN_BYTES || llvmBytes > SINGLE_PARTITION_BYTES) return 1;
+  const required = Math.ceil(llvmBytes / CODEGEN_PART_BYTES);
+  return Math.min(MAX_CODEGEN_PARTS, 2 ** Math.ceil(Math.log2(required)));
+}
+
 /** Output paths for each partition; the first is the requested path. */
 export function nativePartitionPaths(path: string, count: number): string[] {
   const dot = path.lastIndexOf(".");

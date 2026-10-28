@@ -285,7 +285,8 @@ function otherUses(
           (e.op === "===" || e.op === "!==") &&
           (readsField(e.left, members, field) || readsField(e.right, members, field))
         )
-          reason = "the field is compared by identity (its reads need not be the same array)";
+          reason =
+            "the field is compared by identity, and each read of the field may give another array (compare a copy made with slice(), or compare the elements)";
         return reason === null;
       },
       stmt: (s) => {
