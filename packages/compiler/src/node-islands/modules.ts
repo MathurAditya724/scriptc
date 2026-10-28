@@ -172,8 +172,10 @@ export class NodeIslandModuleCollector {
   private readonly traced = new Set<string>();
   /** Real paths of the calling modules. */
   private readonly callers = new Set<string>();
-  /** Real paths of the files loads name (addLoaded). */
+  /** Real paths of the files loads name (addLoaded, addProvided). */
   private readonly loaded = new Set<string>();
+  /** Program modules whose source the program provides (addProvided). */
+  private readonly provided = new Set<string>();
 
   /** Collects the module `specifier` names from `caller` (a real path).
    * Returns null, or the reason the build cannot ship it. */
@@ -195,6 +197,23 @@ export class NodeIslandModuleCollector {
     return this.addModule(this.placed(file));
   }
 
+  /** Collects a module whose source the program provides (a shared module,
+   * runtime scr_node_island_hooks.cjs): Node still resolves it to its file,
+   * so its package is in the tree, or, for a program module, a placeholder
+   * at its path (providedModulePlaceholder): the program's source stays out
+   * of the executable. Island code that imports it loads the program's
+   * module too, so it is not traced either. */
+  addProvided(file: string): void {
+    this.loaded.add(file);
+    const at = packageDirOf(file);
+    if (at !== null) this.addPackage(at.dir);
+    else {
+      const placed = this.placed(file);
+      this.files.add(placed);
+      this.provided.add(placed);
+    }
+  }
+
   /** The collected tree, or null when no call loads a file. */
   tree(): NodeIslandModuleTree | null {
     if (this.files.size === 0 && this.links.size === 0) return null;
@@ -213,13 +232,15 @@ export class NodeIslandModuleCollector {
     if (outer >= 0) root = parts.slice(0, outer).join(sep) || sep;
     const files: NodeIslandModuleFile[] = [];
     for (const file of [...this.files].sort()) {
+      const path = portable(relative(root, file));
+      if (this.provided.has(file)) {
+        const bytes = providedModulePlaceholder(path);
+        files.push({ path, size: bytes.length, sha256: sha256(bytes), placeholder: true });
+        continue;
+      }
       const bytes = trackedReadBytes(file);
       if (bytes === null) continue;
-      files.push({
-        path: portable(relative(root, file)),
-        size: bytes.length,
-        sha256: sha256(bytes),
-      });
+      files.push({ path, size: bytes.length, sha256: sha256(bytes) });
     }
     const links: NodeIslandModuleLink[] = [...this.links]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -295,6 +316,9 @@ export class NodeIslandModuleCollector {
     if (this.traced.has(file)) return null;
     this.traced.add(file);
     this.files.add(file);
+    // The program provides its source: island code never runs this file,
+    // so what it imports is not shipped for it.
+    if (this.provided.has(file)) return null;
     const scope = packageScope(dirname(file));
     if (scope !== null) this.files.add(scope);
     if (!TRACED.test(file)) return null;
@@ -566,6 +590,27 @@ export interface ModuleSpecifierScan {
   computed: { at: number; form: string }[];
 }
 
+/** The string-literal arguments of `requireModule(...)` calls in source
+ * code, comments and template text excluded. */
+export function requireModuleSpecifiers(text: string): string[] {
+  const tokens = moduleTokens(text);
+  const out: string[] = [];
+  for (let k = 0; k + 3 < tokens.length; k++) {
+    const [name, open, arg, close] = [tokens[k]!, tokens[k + 1]!, tokens[k + 2]!, tokens[k + 3]!];
+    if (
+      name.kind === "name" &&
+      name.value === "requireModule" &&
+      open.kind === "punct" &&
+      open.value === "(" &&
+      arg.kind === "string" &&
+      close.kind === "punct" &&
+      close.value === ")"
+    )
+      out.push(arg.value);
+  }
+  return out;
+}
+
 export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
   const tokens = moduleTokens(text);
   const specifiers: string[] = [];
@@ -678,6 +723,16 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
 
 /* ── shipping the tree ────────────────────────────────────────────────── */
 
+/** What the tree ships at the path of a program module the islands share:
+ * Node resolves the module to this file and the program's loader hooks
+ * answer its source (runtime scr_node_island_hooks.cjs), so the file holds
+ * none of the program's source. Evaluating it throws. */
+export function providedModulePlaceholder(path: string): Uint8Array {
+  return new TextEncoder().encode(
+    `throw new Error(${JSON.stringify(`${path} is provided by the compiled program`)});\n`,
+  );
+}
+
 /** The manifest the executable records (scr_node_island.c reads it):
  * `{"files":[[path,size,sha256],...],"links":[[path,target],...]}`. Its
  * SHA-256 names the tree. */
@@ -696,11 +751,13 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
   for (const file of modules.files) {
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
-    try {
-      bytes = new Uint8Array(readFileSync(path));
-    } catch {
-      return `${path} was removed during the build`;
-    }
+    if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    else
+      try {
+        bytes = new Uint8Array(readFileSync(path));
+      } catch {
+        return `${path} was removed during the build`;
+      }
     if (bytes.length !== file.size || sha256(bytes) !== file.sha256)
       return `${path} changed during the build`;
     parts.push(bytes);
