@@ -255,6 +255,56 @@ describe("native process stream checked storage", () => {
   });
 });
 
+describe("native promise checked storage", () => {
+  test("preserves promise fields, elements and union arms without claiming JSON storage", () => {
+    const promise: IrType = { kind: "promise", inner: STRING };
+    const openPromise: IrType = { kind: "promise", inner: DYN };
+    const settled: IrType = { kind: "promise", inner: { kind: "void" } };
+    const reload: IrType = { kind: "record", shapeId: "reload" };
+    const optional: IrType = { kind: "union", unionId: "optionalReload" };
+    const record = (id: string): IrRecordShape | undefined =>
+      id === "reload"
+        ? {
+            id,
+            fields: [
+              { name: "readers", type: F64 },
+              { name: "promise", type: promise },
+            ],
+          }
+        : undefined;
+    const union = (id: string): IrUnionDef | undefined =>
+      id === "optionalReload" ? { id, arms: [reload, { kind: "undefinedT" }] } : undefined;
+    for (const type of [
+      promise,
+      openPromise,
+      settled,
+      arrayOf(promise),
+      { kind: "map", key: STRING, value: promise } as IrType,
+      reload,
+      optional,
+      arrayOf(optional),
+    ]) {
+      expect(canConvertToDyn(type, record, union)).toBe(true);
+      expect(canDynCheckTo(type, record, union)).toBe(true);
+      expect(isJsonSafeType(type, record, union)).toBe(false);
+      expect(isJsonStringifySafeType(type, record, union)).toBe(false);
+    }
+    // A promise of a value with no dynamic representation stays outside the
+    // conversion domain, including when it sits in a record field.
+    const blocked: IrType = { kind: "promise", inner: arrayOf({ kind: "procStream" }) };
+    expect(canConvertToDyn(blocked, record, union)).toBe(false);
+    expect(canConvertToDyn(arrayOf(blocked), record, union)).toBe(false);
+    expect(
+      canConvertToDyn(
+        { kind: "record", shapeId: "blockedReload" },
+        (id) =>
+          id === "blockedReload" ? { id, fields: [{ name: "promise", type: blocked }] } : undefined,
+        () => undefined,
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("checked conversion graph traversal", () => {
   test.each([
     { label: "boxing", convert: canConvertToDyn },

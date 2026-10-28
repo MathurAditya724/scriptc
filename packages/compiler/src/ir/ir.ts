@@ -4572,6 +4572,17 @@ function canBoxDynCompositeAt(
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);
+    case "promise":
+      // Promises box by REFERENCE wherever the walker meets them, nested in
+      // records, arrays and unions exactly like a bare promise: promise<dyn>
+      // carries its ScrPromise, a void payload is absent, and any other inner
+      // converts through the adapter promise toDynHelper emits
+      // (scr_dyn_new_promise_adapting).
+      return (
+        t.inner.kind === "dyn" ||
+        t.inner.kind === "void" ||
+        canConvertToDyn(t.inner, getRecord, getUnion, visiting)
+      );
     case "set":
       return (
         canConvertToDyn(t.elem, getRecord, getUnion, visiting) &&
