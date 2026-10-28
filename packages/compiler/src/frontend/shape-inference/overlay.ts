@@ -418,9 +418,12 @@ export function planShapeOverlay(
     };
 
     // Functions called with `new` yield their instance, whatever they return.
-    const constructed = new Set<ts.Node | undefined>(
-      [...analysis.fnOfInstance.values()].map((a) => a.node),
-    );
+    // The set holds nodes only: compiled natively, a Set of `ts.Node |
+    // undefined` keeps that union in a box, and so every `ts.Node |
+    // undefined` value of the compiler, such as each optional child a syntax
+    // node returns.
+    const constructed = new Set<ts.Node>();
+    for (const a of analysis.fnOfInstance.values()) if (a.node) constructed.add(a.node);
     // Return values merged over every analysis context of each function.
     const returns = new Map<ts.Node, Set<Atom>>();
     for (const info of analysis.functions.values()) {
