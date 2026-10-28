@@ -10632,6 +10632,72 @@ function isUntypedIterable(lowerer: Lowerer, node: ts.Expression): boolean {
   return lowerer.mapTypeOf(type)?.kind === "dyn";
 }
 
+/** `for (const x of map.get(k) ?? [])`: the receiver's checker type is one
+ * non-array iterable beside `never[]` — the array literal's type, whose only
+ * value is the empty array (`never` is uninhabited), so that arm yields
+ * nothing at all. The loop walks the iterable arm under its tag test and the
+ * empty-array arm runs zero iterations. An ARRAY iterable never needs this:
+ * `T[] | never[]` reduces in the checker to `T[]`, never being assignable to
+ * T. A union of two inhabited iterables has no single element type and keeps
+ * its existing fence. */
+function lowerForOfEmptyArrayArm(
+  lowerer: Lowerer,
+  stmt: ts.ForOfStatement,
+  iterable: IrExpr,
+  iterSrc: ts.Expression,
+  labels?: string[],
+): IrStmt | null {
+  if (iterable.type.kind !== "union" || stmt.awaitModifier !== undefined) return null;
+  const { checker } = lowerer;
+  const widened = lowerer.typeOf(iterSrc);
+  if (!widened.isUnionType()) return null;
+  const parts = ts.constituentTypes(widened);
+  if (parts.length !== 2) return null;
+  const neverArrays = parts.filter((part) => {
+    if (!checker.isArrayType(part)) return false;
+    const elem = checker.getTypeArguments(part as ts.TypeReference)[0];
+    return elem !== undefined && (elem.flags & ts.TypeFlags.Never) !== 0;
+  });
+  if (neverArrays.length !== 1) return null;
+  const other = parts.find((part) => part !== neverArrays[0]);
+  if (other === undefined) return null;
+  const armT = lowerer.mapTypeOf(other);
+  if (armT === null) return null;
+  if (armT.kind !== "set" && armT.kind !== "map" && armT.kind !== "string") return null;
+  const tag = lowerer.armTag(iterable.type.unionId, armT);
+  if (tag < 0) return null;
+  const loc = locOf(stmt);
+  const narrowed: IrExpr = {
+    kind: "unionNarrow",
+    unionId: iterable.type.unionId,
+    tag,
+    value: iterable,
+    type: armT,
+    loc,
+  };
+  const loop: IrStmt =
+    armT.kind === "set"
+      ? lowerForOfSet(lowerer, stmt, narrowed, armT)
+      : armT.kind === "map"
+        ? lowerForOfMap(lowerer, stmt, narrowed, armT)
+        : lowerForOfString(lowerer, stmt, narrowed, labels);
+  return {
+    kind: "if",
+    cond: {
+      kind: "unionIsTag",
+      unionId: iterable.type.unionId,
+      tag,
+      negated: false,
+      value: iterable,
+      type: BOOL,
+      loc,
+    },
+    then: [loop],
+    else_: null,
+    loc,
+  };
+}
+
 export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   // Labels consume HERE (nested statements must never see them). The
   // plain array/string paths carry them; the container/matchAll/stdin
@@ -10914,6 +10980,10 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   {
     const iterableUnion = iterableUnionOf(lowerer, iterable.type);
     if (iterableUnion) return lowerForOfIterable(lowerer, stmt, iterable, iterableUnion, labels);
+  }
+  {
+    const emptyArrayArm = lowerForOfEmptyArrayArm(lowerer, stmt, iterable, iterSrc, labels);
+    if (emptyArrayArm) return emptyArrayArm;
   }
   let tupleSource: {
     shapeId: string;
