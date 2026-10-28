@@ -231,6 +231,9 @@ typedef struct ScrWebStreamBridge {
   /* Whether a ReadableStream is locked or disturbed, which makes it
    * unusable as a body. */
   bool (*unusable)(const ScrDyn *stream);
+  /* Whether a ReadableStream is disturbed: a read, a cancel or a pipe
+   * has started on it. */
+  bool (*disturbed)(const ScrDyn *stream);
 } ScrWebStreamBridge;
 extern SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge;
 /* The read side of a stream another unit implements, which

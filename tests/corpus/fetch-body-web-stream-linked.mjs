@@ -91,3 +91,26 @@ const readAll = async (stream) => {
   const rewrapped = new Response(source.body);
   console.log("rewrapped", source.bodyUsed, await rewrapped.text(), source.bodyUsed);
 }
+
+{
+  // Starting a read, a cancel, a pipe or an iteration on the body's stream
+  // updates bodyUsed when it starts, as in Node.
+  const read = new Response("read now");
+  void read.body.values;
+  const pending = read.body.getReader().read();
+  console.log("bodyUsed read", read.bodyUsed);
+  await pending;
+  const canceled = new Response("cancel now");
+  void canceled.body.tee;
+  const cancel = canceled.body.cancel("why");
+  console.log("bodyUsed cancel", canceled.bodyUsed);
+  await cancel;
+  const piped = new Response("pipe now");
+  const pipe = piped.body.pipeTo(new WritableStream());
+  console.log("bodyUsed pipe", piped.bodyUsed, piped.body.locked);
+  await pipe;
+  const iterated = new Response("iterate now");
+  const step = iterated.body.values().next();
+  console.log("bodyUsed next", iterated.bodyUsed);
+  await step;
+}

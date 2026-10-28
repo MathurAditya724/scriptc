@@ -2137,7 +2137,12 @@ static bool ws_readable_unusable(const ScrDyn *stream) {
   return !s || ws_readable_locked(s) || s->disturbed;
 }
 
-static const ScrWebStreamBridge ws_fetch_bridge = {ws_reader_read_into, ws_readable_unusable};
+static bool ws_readable_disturbed(const ScrDyn *stream) {
+  WsReadable *s = ws_stream_of(stream);
+  return s && s->disturbed;
+}
+
+static const ScrWebStreamBridge ws_fetch_bridge = {ws_reader_read_into, ws_readable_unusable, ws_readable_disturbed};
 
 /* ── WritableStream (lib/internal/webstreams/writablestream.js) ──── */
 

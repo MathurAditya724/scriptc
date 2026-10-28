@@ -1,5 +1,6 @@
 import { staticFetchMembers } from "../../../compat/fetch-profile.js";
 import { numLit } from "../../../ir/build.js";
+import { everyStmt } from "../../../ir/traverse.js";
 import {
   BOOL,
   DYN,
@@ -253,34 +254,59 @@ function isReadableStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpre
   return owner !== undefined && owner.name.text === "ReadableStream";
 }
 
+/** Whether a checker type is any or unknown, which a fetch body can be. */
+function isUntypedType(type: ts.Type): boolean {
+  return (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+}
+
+/** Whether the program links the fetch unit (a fetch. entry point), whose
+ * Response and Request bodies can reach JavaScript as untyped values. */
+function programLinksFetch(functions: IrFunction[]): boolean {
+  let found = false;
+  const visitor = {
+    expr: (e: IrExpr): boolean => {
+      if (e.kind === "libCall" && e.fn.startsWith("fetch.")) found = true;
+      return !found;
+    },
+    stmt: (): boolean => !found,
+  };
+  for (const fn of functions) {
+    for (const s of fn.body) everyStmt(s, visitor);
+    if (found) return true;
+  }
+  return false;
+}
+
 /** Whether a JavaScript source of the program uses a ReadableStream member
  * that the fetch unit's own stream does not implement (the fetch profile's
  * readableStreamUnsupported): a member access the checker resolves to the
- * interface, or `for await` over a ReadableStream value. */
-function programUsesWebStreamOnlyMembers(lowerer: Lowerer): boolean {
+ * interface, or `for await` over a ReadableStream value. The same member
+ * names on an untyped receiver, or `for await` over an untyped value,
+ * count in a program that links the fetch unit, since the value can be a
+ * fetch body. */
+function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction[]): boolean {
   const members = staticFetchMembers().readableStreamUnsupported;
   const iterates = members.has("[Symbol.asyncIterator]");
+  let untyped = false;
   for (const file of lowerer.program.getSourceFiles()) {
     if (file.isDeclarationFile || !isJsSourceFile(file)) continue;
     let found = false;
     ts.walkPreorder(file, (node) => {
-      if (
-        (ts.isPropertyAccessExpression(node) &&
-          members.has(node.name.text) &&
-          isReadableStreamMember(lowerer, node)) ||
-        (iterates &&
-          ts.isForOfStatement(node) &&
-          node.awaitModifier !== undefined &&
-          isReadableStreamType(lowerer, lowerer.typeOf(node.expression)))
-      ) {
-        found = true;
-        return "stop";
+      let receiver: ts.Type | null = null;
+      if (ts.isPropertyAccessExpression(node) && members.has(node.name.text)) {
+        if (isReadableStreamMember(lowerer, node)) found = true;
+        else receiver = lowerer.typeOf(node.expression);
+      } else if (iterates && ts.isForOfStatement(node) && node.awaitModifier !== undefined) {
+        receiver = lowerer.typeOf(node.expression);
+        if (isReadableStreamType(lowerer, receiver)) found = true;
       }
+      if (found) return "stop";
+      if (receiver !== null && isUntypedType(receiver)) untyped = true;
       return undefined;
     });
     if (found) return true;
   }
-  return false;
+  return untyped && programLinksFetch(functions);
 }
 
 /** Links the web stream classes into a program whose JavaScript uses a
@@ -289,7 +315,8 @@ function programUsesWebStreamOnlyMembers(lowerer: Lowerer): boolean {
  * (scr_fetch.c, sf_stream_web_view). %main installs the classes first. A
  * program that names one of the classes links them already. */
 export function installFetchBodyWebStreams(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (programNamesWebStreamClass(lowerer) || !programUsesWebStreamOnlyMembers(lowerer)) return;
+  if (programNamesWebStreamClass(lowerer) || !programUsesWebStreamOnlyMembers(lowerer, functions))
+    return;
   const main = functions.find((fn) => fn.name === ENTRY_NAME);
   if (!main) return;
   const loc = main.loc;

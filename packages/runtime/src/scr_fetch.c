@@ -4381,6 +4381,12 @@ static ScrDyn *sf_response_get(void *ptr, const char *key, size_t len) {
       sf_name(key, len, "statusText"))
     sf_response_materialize(r);
   if (sf_name(key, len, "bodyUsed")) {
+#ifdef SCR_HANDLE_CLASSES
+    /* A read, cancel or pipe started on the web view disturbs it at once,
+     * before its pull reaches this stream. */
+    if (!r->null_body && r->body->web_view && scr_web_stream_bridge->disturbed(r->body->web_view))
+      return scr_dyn_new_bool(true);
+#endif
     return scr_dyn_new_bool(!r->null_body && r->body->disturbed);
   }
   if (sf_name(key, len, "body")) {
