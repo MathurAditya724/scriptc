@@ -95,11 +95,7 @@ import {
   NativeCodegenError,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import {
-  nativeCodegenParts,
-  nativePartitionPaths,
-  nativeProgramPartitions,
-} from "./backend/native-codegen-core.js";
+import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -787,12 +783,7 @@ async function emitNativeProgramObject(
   const target = nativeCodegenTarget();
   const llvmBytes = llvmInputBytes(llvm);
   const single = opts.nativeProgramObject === true || target === null;
-  // An optimized program that stays one partition is optimized whole and
-  // generates code for its parts concurrently.
-  const codegenParts = single || opts.optimization === "dev" ? 1 : nativeCodegenParts(llvmBytes);
-  const partitions = single
-    ? 1
-    : Math.max(nativeProgramPartitions(llvmBytes, opts.optimization === "dev"), codegenParts);
+  const partitions = single ? 1 : nativeProgramPartitions(llvmBytes, opts.optimization === "dev");
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -802,7 +793,6 @@ async function emitNativeProgramObject(
       optimization: opts.optimization === "dev" ? "0" : "2",
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
-      ...(codegenParts > 1 ? { splitCodegen: true } : {}),
       ...(profile === undefined ? {} : { profile }),
     });
     return {

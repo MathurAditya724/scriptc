@@ -169,6 +169,75 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     });
   }
 
+  test("an internal function that other partitions reach through an import keeps its name across edits", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-imports-"));
+    dirs.push(dir);
+    const count = 24;
+    const factor = (index: number, edit: number) => index + 3 + (index === 5 ? edit : 0);
+    // Each leaf is internal and called only by its wrapper. The wrappers are
+    // small, and main and the steps import them from other partitions, with
+    // a reference to the leaf, which its partition then exports.
+    const source = (edit: number) => {
+      const lines: string[] = [];
+      for (let index = 0; index < count; index++)
+        lines.push(
+          `define internal i64 @leaf${index}(i64 %value) noinline {`,
+          `  %scaled = mul i64 %value, ${factor(index, edit)}`,
+          "  ret i64 %scaled",
+          "}",
+          `define internal i64 @wrap${index}(i64 %value) {`,
+          `  %leaf = call i64 @leaf${index}(i64 %value)`,
+          "  %next = add i64 %leaf, 1",
+          "  ret i64 %next",
+          "}",
+          `define i64 @step${index}(i64 %value) noinline {`,
+          `  %wrapped = call i64 @wrap${index}(i64 %value)`,
+          "  ret i64 %wrapped",
+          "}",
+        );
+      lines.push("define i32 @main() {", "entry:");
+      for (let index = 0; index < count; index++)
+        lines.push(
+          `  %s${index} = call i64 @step${index}(i64 1)`,
+          `  %w${index} = call i64 @wrap${index}(i64 2)`,
+          `  %a${index} = add i64 ${index === 0 ? "0" : `%t${index - 1}`}, %s${index}`,
+          `  %t${index} = add i64 %a${index}, %w${index}`,
+        );
+      lines.push(
+        `  %low = urem i64 %t${count - 1}, 251`,
+        "  %code = trunc i64 %low to i32",
+        "  ret i32 %code",
+        "}",
+      );
+      return lines.join("\n") + "\n";
+    };
+    const expected = (edit: number) => {
+      let total = 0;
+      for (let index = 0; index < count; index++) total += 3 * factor(index, edit) + 2;
+      return total % 251;
+    };
+    // ThinLTO renames an exported internal function <name>.llvm.<module
+    // hash>. The hash is the partition number, so an edit of the leaf's
+    // partition leaves the name, and the importing partitions, unchanged.
+    const promoted = async (objects: string[]) => {
+      const names = new Set<string>();
+      for (const object of objects)
+        for (const match of (await execFileAsync("nm", [object])).stdout.matchAll(
+          /^[0-9a-fA-F ]+ ([TU]) _?(leaf\d+\.llvm\.\d+)$/gm,
+        ))
+          names.add(`${match[1]} ${match[2]}`);
+      return names;
+    };
+    const first = await emit(dir, source(0), { outputs: 4, optLevel: "2", name: "first" });
+    expect(await exitCode(dir, first, "first")).toBe(expected(0));
+    const edited = await emit(dir, source(4), { outputs: 4, optLevel: "2", name: "edited" });
+    expect(await exitCode(dir, edited, "edited")).toBe(expected(4));
+    const names = await promoted(first);
+    expect([...names].some((name) => name.startsWith("U "))).toBe(true);
+    for (const name of names) expect(name).toMatch(/\.llvm\.[1-4]$/);
+    expect(await promoted(edited)).toEqual(names);
+  });
+
   test("split code generation links deterministically and defines every function once", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-"));
     dirs.push(dir);
@@ -339,6 +408,53 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(await readFile(renamed[index]!)).toEqual(await readFile(parts[index]!));
   });
 
+  test("an optimized module whose largest partition would hold most of its function text is optimized whole", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-dominated-"));
+    dirs.push(dir);
+    // One function of 400 instructions and four small ones.
+    const lines = [
+      "@sink = global i64 0",
+      "define void @large(i64 %x) noinline {",
+      "  %v0 = add i64 %x, 1",
+    ];
+    for (let step = 1; step < 400; step++)
+      lines.push(`  %v${step} = mul i64 %v${step - 1}, ${step}`);
+    lines.push("  store volatile i64 %v399, ptr @sink", "  ret void", "}");
+    for (let index = 0; index < 4; index++)
+      lines.push(
+        `define void @small${index}(i64 %x) noinline {`,
+        `  %v = add i64 %x, ${index}`,
+        "  store volatile i64 %v, ptr @sink",
+        "  ret void",
+        "}",
+      );
+    lines.push("define i32 @main() {", "  call void @large(i64 1)");
+    for (let index = 0; index < 4; index++) lines.push(`  call void @small${index}(i64 1)`);
+    lines.push("  ret i32 0", "}");
+    const source = lines.join("\n") + "\n";
+    const cache = join(dir, "cache");
+    const contents = (paths: string[]) => Promise.all(paths.map((path) => readFile(path)));
+    const partitioned = await emit(dir, source, {
+      outputs: 4,
+      optLevel: "2",
+      cache,
+      name: "partitioned",
+    });
+    const whole = await emit(dir, source, {
+      outputs: 4,
+      optLevel: "2",
+      split: true,
+      name: "whole",
+    });
+    expect(await contents(partitioned)).toEqual(await contents(whole));
+    // No partition was simplified for a thin link.
+    expect(await cacheEntries(cache, ".bc")).toHaveProperty("size", 0);
+    expect(await exitCode(dir, partitioned, "partitioned")).toBe(0);
+    // Unoptimized partitions are compiled once each, so they stay divided.
+    await emit(dir, source, { outputs: 4, optLevel: "0", cache, name: "unoptimized" });
+    expect((await cacheEntries(cache, ".o")).size).toBeGreaterThan(1);
+  });
+
   test("split code generation requires several optimized outputs and no cache", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-split-codegen-invalid-"));
     dirs.push(dir);
@@ -351,6 +467,54 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       await expect(failure).rejects.toMatchObject({
         stderr: expect.stringContaining("invalid_split"),
       });
+    }
+  });
+
+  test("in a small module, a function that one function of another source file calls shares its partition", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-chains-"));
+    dirs.push(dir);
+    const count = 8;
+    const lines: string[] = ["; scriptc-group 0"];
+    for (let index = 0; index < count; index++)
+      lines.push(
+        `define internal i64 @helper${index}(i64 %value) noinline {`,
+        `  %scaled = mul i64 %value, ${index + 2}`,
+        "  ret i64 %scaled",
+        "}",
+      );
+    lines.push("; scriptc-group 1");
+    for (let index = 0; index < count; index++)
+      lines.push(
+        `define i64 @caller${index}(i64 %value) noinline {`,
+        `  %helped = call i64 @helper${index}(i64 %value)`,
+        "  ret i64 %helped",
+        "}",
+      );
+    lines.push("; scriptc-group", "define i32 @main() {", "entry:");
+    for (let index = 0; index < count; index++)
+      lines.push(
+        `  %c${index} = call i64 @caller${index}(i64 1)`,
+        `  %t${index} = add i64 ${index === 0 ? "0" : `%t${index - 1}`}, %c${index}`,
+      );
+    lines.push(`  %code = trunc i64 %t${count - 1} to i32`, "  ret i32 %code", "}");
+    const objects = await emit(dir, lines.join("\n") + "\n", {
+      outputs: 4,
+      optLevel: "0",
+      name: "chains",
+    });
+    let sum = 0;
+    for (let index = 0; index < count; index++) sum += index + 2;
+    expect(await exitCode(dir, objects, "chains")).toBe(sum);
+    const listings = await Promise.all(
+      objects.map(async (object) => (await execFileAsync("nm", ["--defined-only", object])).stdout),
+    );
+    const home = (name: string) =>
+      listings.findIndex((listing) =>
+        new RegExp(`^[0-9a-fA-F]+ [Tt] _?${name}$`, "m").test(listing),
+      );
+    for (let index = 0; index < count; index++) {
+      expect(home(`caller${index}`)).toBeGreaterThanOrEqual(0);
+      expect(home(`helper${index}`)).toBe(home(`caller${index}`));
     }
   });
 

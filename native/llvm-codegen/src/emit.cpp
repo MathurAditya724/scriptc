@@ -812,9 +812,10 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.countAnnotated(PartitionMatch.Annotated);
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
       MPM.addPass(UnnameStructTypes());
+      // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
-                                    /*EmitModuleHash=*/true));
+                                    /*EmitModuleHash=*/false));
       MPM.run(Mod, P.MAM);
     }
     if (Annotating) {
@@ -921,6 +922,24 @@ compileOptimizedPartitions(const EmitOptions &Options,
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  // An internal function or variable that another partition imports a
+  // reference to is renamed <name>.llvm.<first 64 bits of its module's hash>.
+  // A hash of the module's contents would change that name in every
+  // importing partition after any edit of the exporting one, and compile
+  // them all again. Each module's hash is its partition number instead,
+  // which keeps the names unique within the program and the same across
+  // builds.
+  Config.CombinedIndexHook = [&Names](const ModuleSummaryIndex &Index,
+                                      const DenseSet<GlobalValue::GUID> &) {
+    StringMap<ModuleHash> &Paths =
+        const_cast<ModuleSummaryIndex &>(Index).modulePaths();
+    for (size_t I = 0; I < Names.size(); ++I) {
+      auto It = Paths.find(Names[I]);
+      if (It != Paths.end())
+        It->second = {0, static_cast<uint32_t>(I + 1), 0, 0, 0};
+    }
+    return true;
+  };
   limitImports();
   if (!Options.ProfileUse.empty())
     limitProfileImports();
@@ -1060,8 +1079,22 @@ int emitPartitions(const EmitOptions &Options) {
         MemoryBuffer::getFile(Options.Input, /*IsText=*/false,
                               /*RequiresNullTerminator=*/false);
     if (Input) {
+      bool Optimized = Options.OptLevel != "0";
       std::optional<ProgramPartitions> Text = partitionProgramText(
-          (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()));
+          (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()),
+          /*SkipDominated=*/Optimized);
+      // An optimized partition is simplified before the thin link and
+      // optimized again after it, so one that holds more than two thirds of
+      // the program's function text takes longer than optimizing the module
+      // whole: such a module is optimized whole, and its code is generated in
+      // parts.
+      if (Text && Optimized && dominatedPartitions(Text->FunctionBytes)) {
+        EmitOptions Whole = Options;
+        Whole.SplitCodegen = true;
+        Whole.CacheDirectory.clear();
+        Input->reset();
+        return emit(Whole);
+      }
       if (Text) {
         Input->reset();
         PartitionPlan Plan{std::move(Text->Sources),
@@ -1339,6 +1372,44 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
 }
 
 } // namespace
+
+std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
+                                          const std::string &OptLevel,
+                                          bool Instrument,
+                                          const std::string &ProfileGenerate,
+                                          const std::string &ProfileUse,
+                                          ModuleProfileMatch &Result) {
+  OptimizationLevel Level = optimizationLevel(OptLevel);
+  std::optional<PGOOptions> Profile;
+  if (Instrument) {
+    Profile = PGOOptions(ProfileGenerate, "", "", "", PGOOptions::IRInstr);
+  } else if (!ProfileUse.empty()) {
+    EmitOptions Inspected;
+    Inspected.ProfileUse = ProfileUse;
+    if (std::optional<EmitFailure> Failure = inspectProfile(Inspected))
+      return Failure->Message;
+    reportMissingProfiles();
+    Profile = PGOOptions(ProfileUse, "", "", "", PGOOptions::IRUse);
+  }
+  bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
+  ProfileMatch Match;
+  if (Annotating)
+    M.getContext().setDiagnosticHandler(
+        std::make_unique<ProfileMatchHandler>(Match));
+  {
+    Pipeline P(Machine, Level, std::move(Profile));
+    if (Annotating)
+      P.countAnnotated(Match.Annotated);
+    P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
+  }
+  Result.Annotated = Match.Annotated.load();
+  Result.Mismatched = Match.Mismatched.load();
+  Result.Missing = Match.Missing.load();
+  if (std::optional<EmitFailure> Failure =
+          verify(M, "post_optimization_verification_failed"))
+    return Failure->Message;
+  return std::nullopt;
+}
 
 int emit(const EmitOptions &Options) {
   if (!supportsTarget(Options.Target))
