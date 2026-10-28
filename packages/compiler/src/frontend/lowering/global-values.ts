@@ -122,11 +122,17 @@ function readsBuiltinByName(lowerer: Lowerer, node: ts.ElementAccessExpression):
 /** The value a JavaScript source reads for the declared global `name`
  * taken as a value, whatever its spelling (`name`, `globalThis.name`,
  * `const { name } = globalThis`, `globalThis[name]`), or null when it
- * reads the opaque identity token. */
-export function jsGlobalValueByName(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+ * reads the opaque identity token. `reportFences` (builtinNamespaceValue)
+ * is false for the program's lookup. */
+export function jsGlobalValueByName(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  reportFences = true,
+): IrExpr | null {
   return (
     jsSpecialGlobalValue(lowerer, name, loc) ??
-    builtinNamespaceValue(lowerer, name, loc) ??
+    builtinNamespaceValue(lowerer, name, loc, reportFences) ??
     builtinGlobalValue(name, loc, true)
   );
 }
@@ -318,7 +324,7 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
           ? programNamesWebStreamClass(lowerer)
             ? webStreamClassValue(webStream, loc)
             : null
-          : jsGlobalValueByName(lowerer, global, loc);
+          : jsGlobalValueByName(lowerer, global, loc, false);
       if (value === null) continue;
       body.push({
         kind: "if",
