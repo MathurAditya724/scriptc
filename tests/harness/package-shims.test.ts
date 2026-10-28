@@ -132,6 +132,7 @@ describe("package shims", () => {
     const expected = await run(process.execPath, [join(original, "main.ts")], original);
     expect(expected).toContain("parser: ERR_MODULE_NOT_FOUND");
     expect(expected).toContain("lazy: ERR_MODULE_NOT_FOUND");
+    expect(expected).toContain("dep: ERR_MODULE_NOT_FOUND");
 
     const dir = copyCase("unloaded-dynamic-import", "unloaded-dynamic-installed");
     const write = (path: string, text: string) => {

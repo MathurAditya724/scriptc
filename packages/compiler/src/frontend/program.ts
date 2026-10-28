@@ -6551,7 +6551,12 @@ function preflight7(load: LoadResult): {
         const root =
           resolveImport7(program, sf, arg.text) ?? npmStaticDepSf7(program, sf, arg.text);
         if (root === null || root.isDeclarationFile || startup.has(root)) continue;
-        if (dynamicImportRejections.has(root) || covered.has(root)) continue;
+        // A module inside an already-rejected graph is `covered`, but a
+        // literal import() of it needs its OWN rejection entry: its graph
+        // rejects when that import runs, so it must not join the compiled
+        // graph (where lowering would fail) merely because another rejected
+        // import also reaches it. Walk each direct root independently.
+        if (dynamicImportRejections.has(root)) continue;
         seen.clear();
         const crash = walk(root);
         if (crash === null) continue;

@@ -27,6 +27,15 @@ async function main(): Promise<void> {
   } catch (err) {
     report("lazy:", err);
   }
+  // `dep.ts` is a dependency of the already-rejected `./lazy.ts` graph, but
+  // this literal import() targets it directly: its own graph rejects too, so
+  // it must reject at run time instead of joining the compiled graph.
+  try {
+    const dep = await import("./dep.ts");
+    console.log(dep.helper("c"));
+  } catch (err) {
+    report("dep:", err);
+  }
   console.log("end");
 }
 main();
