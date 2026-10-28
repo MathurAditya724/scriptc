@@ -1400,3 +1400,21 @@ test("node-types: process.versions entries @types/node declares as strings read 
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
+
+test("node-types: a void slot takes a `() => process.off(...)` cleanup closure (@types/node's Process result)", async () => {
+  const outDir = outDirFor("process-listener-cleanup");
+  const entry = join(nodeTypesDir, "process-listener-cleanup.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "process-listener-cleanup"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});

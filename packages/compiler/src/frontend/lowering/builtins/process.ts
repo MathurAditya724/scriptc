@@ -8,6 +8,7 @@ import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { resultIsDiscarded } from "../call-position.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { voidizedCallback } from "../lower-server.js";
 import {
@@ -813,7 +814,7 @@ export function lowerProcessMethodCall(
     if (call.arguments.nodes.length !== 0) {
       lowerer.noLowering(`process.disconnect with ${call.arguments.nodes.length} arguments`, call);
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,
@@ -974,7 +975,7 @@ export function lowerProcessMethodCall(
         '"data", "end", "error", and "keypress" are the supported stdin events (as literals)',
       );
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,
@@ -1279,7 +1280,7 @@ export function lowerProcessMethodCall(
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if ((event === "message" || event === "disconnect") && !isOff) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1299,7 +1300,7 @@ export function lowerProcessMethodCall(
       };
     }
     if (event === "uncaughtException" || event === "uncaughtExceptionMonitor") {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported("SC1090", call, "chaining process exception listener registration");
       }
       const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
@@ -1321,7 +1322,7 @@ export function lowerProcessMethodCall(
     // a handler attached after delivery fires it once, synchronously
     // with the promise.
     if (event === "unhandledRejection" || event === "rejectionHandled") {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1344,7 +1345,7 @@ export function lowerProcessMethodCall(
     // util.deprecate dispatch on the next tick. off/removeListener remove
     // by closure identity.
     if (event === "warning" && (member === "on" || isOff)) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1361,7 +1362,7 @@ export function lowerProcessMethodCall(
       };
     }
     if (event === null || event.startsWith("SIG")) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported("SC1090", call, "chaining process signal listener registration");
       }
       const name = lowerer.coerceToExpected(lowerer.lowerExpr(call.arguments.nodes[0]!), STRING);
@@ -1387,7 +1388,7 @@ export function lowerProcessMethodCall(
     if (event !== "exit") {
       lowerer.noLowering(`process.${member}("${event}", ...)`, call.arguments.nodes[0]!);
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,

@@ -1115,10 +1115,23 @@ export function lambdaSignature(
   // (stream is undefined — the streamUndefCall precedent), so the body
   // is throw-only and the declared return type (ServerHttp2Stream,
   // unmappable) must not decide the ABI — void, the `never` stance.
+  //
+  // A VOID contextual slot discards the lambda's result (TS's
+  // void-returning assignability rule), so an unannotated sync lambda's
+  // ABI is void whatever its body infers. Deciding that BEFORE
+  // declaredReturnType keeps an inferred return that has no lowering
+  // from fencing on a value nobody reads: `handlers.push(() =>
+  // process.off(signal, handler))` infers `Process` (the chained-result
+  // type of `off`) against a `() => void` element. The decision itself
+  // is the one the adoption block below takes for mappable inferred
+  // returns, so this only changes programs that do not compile today.
   let ret =
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
-      : lowerer.declaredReturnType(node, node);
+      : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          voidContextualSlot(lowerer, node)
+        ? VOID
+        : lowerer.declaredReturnType(node, node);
   ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
   // A contextually-typed arrow/function EXPRESSION whose slot signature
   // returns a composite type the inferred return doesn't spell adopts
@@ -1267,6 +1280,38 @@ function isSatisfiesOperand(literal: ts.Node): boolean {
     else return ts.isSatisfiesExpression(parent) && parent.expression === n;
   }
   return false;
+}
+
+/** Whether `node` — an unannotated, synchronous arrow or function
+ * expression — sits in a contextual VOID slot: a single call signature
+ * returning void. The slot discards whatever the body produces, so the
+ * closure's ABI is void regardless of the body's inferred type (see the
+ * ABI decision in lambdaSignature). An object-literal property keeps the
+ * inferred return: that literal is typed by its own properties, and the
+ * field can be read back and called. Async lambdas keep their promise,
+ * generators keep theirs, and an explicit return annotation keeps its
+ * word. */
+function voidContextualSlot(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  if (node.type) return false;
+  if (node.asteriskToken) return false;
+  if (node.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword))
+    return false;
+  if (
+    ts.isPropertyAssignment(node.parent) &&
+    node.parent.initializer === node &&
+    ts.isObjectLiteralExpression(node.parent.parent)
+  )
+    return false;
+  const ctxType = lowerer.checker.getContextualType(node);
+  if (!ctxType) return false;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType));
+  return (
+    sigs.length === 1 &&
+    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
+  );
 }
 
 /** The type of the property an object-literal method fills on the

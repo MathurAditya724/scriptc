@@ -2789,6 +2789,14 @@ function buildLibFnSignatures() {
     "child.onExit": { argTypes: [CHILD_T, null], result: VOID },
     "child.onClose": { argTypes: [CHILD_T, null], result: VOID },
     "child.onError": { argTypes: [CHILD_T, null], result: VOID },
+    /** The remove-by-identity pairs (child.off/removeListener): the
+     * listener argument is the closure VALUE that was registered —
+     * BORROWED, compared by pointer and never retained (a value the
+     * registry does not hold removes nothing). */
+    "child.offSpawn": { argTypes: [CHILD_T, null], result: VOID },
+    "child.offExit": { argTypes: [CHILD_T, null], result: VOID },
+    "child.offClose": { argTypes: [CHILD_T, null], result: VOID },
+    "child.offError": { argTypes: [CHILD_T, null], result: VOID },
     // Like process.envGet, spawnRes.status's result type is program-dependent
     // (the interned `number | null` union) — the libCall case checks the arms.
     "spawnRes.status": { argTypes: [SPAWNRES_T], result: VOID },
@@ -2822,6 +2830,10 @@ function buildLibFnSignatures() {
      * the OS at exit. All receivers borrowed. */
     "child.pid": { argTypes: [CHILD_T], result: VOID },
     "child.exitCode": { argTypes: [CHILD_T], result: VOID },
+    // child.signalCode's result is the interned `string | null` union
+    // (the terminating signal's name, null while running, after a normal
+    // exit, and after a spawn failure) — the spawnRes.signal pattern.
+    "child.signalCode": { argTypes: [CHILD_T], result: VOID },
     // The close-override pair: the bound close's result func type and the
     // override's func argument are program-dependent (the callback union's
     // tags) — the slots pin the server receiver; the libCall case checks
