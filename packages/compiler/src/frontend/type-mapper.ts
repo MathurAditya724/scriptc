@@ -6517,10 +6517,12 @@ function neverConditionalUnitOnly(t: ts.Type, ctx: TypeMapperCtx): boolean {
 /** mapType of a distributed conditional (distributedConditionalParts): the
  * union of its members' results, as the concrete conditional's union maps
  * them. An `unknown` or `any` result absorbs the rest (the checker's union
- * is that type), and `undefined` and `null` results are the unit arms. Null
- * when it does not distribute, when a result does not map, when every
- * member selects never (the enclosing union drops such a part), or when
- * only units remain. */
+ * is that type), as does a result that maps to the checked-dynamic value
+ * (`{}`, `object`, `Object`: the checker's union of one with a concrete
+ * result is the top type), and `undefined` and `null` results are the unit
+ * arms. Null when it does not distribute, when a result does not map, when
+ * every member selects never (the enclosing union drops such a part), or
+ * when only units remain. */
 function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const parts = distributedConditionalParts(type, ctx);
   if (!parts || parts.length === 0) return null;
@@ -6538,6 +6540,10 @@ function mapDistributedConditional(type: ts.Type, ctx: TypeMapperCtx): IrType | 
     }
     const mapped = mapType(part, ctx);
     if (!mapped) return null;
+    // A top-type result (`{}`, `object`, `Object`): the checker's union with
+    // a concrete result is the top type itself, so the member is
+    // checked-dynamic. A `dyn` arm would be invalid union IR (SC9001).
+    if (mapped.kind === "dyn") return DYN;
     const members =
       mapped.kind === "union" ? (ctx.unions.get(mapped.unionId)?.arms ?? null) : [mapped];
     if (!members) return null;
