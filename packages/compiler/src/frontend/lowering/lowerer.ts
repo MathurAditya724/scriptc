@@ -4090,6 +4090,11 @@ export class Lowerer {
       // one lowers again rather than replaying a record.
       checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
       checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
+      // Island module loads hold literals of the unit's IR too, and their
+      // module globals (with each CommonJS named import's snapshot global)
+      // are created by the first load: a unit that adds either lowers again.
+      checkedTable("islandModules", () => this.islandModules.size),
+      checkedTable("nodeIslandLoads", () => this.nodeIslandLoads.length),
       checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
       checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
       checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
@@ -4312,6 +4317,7 @@ export class Lowerer {
   static readonly unjournaled: readonly string[] = [
     // settings
     "frontendServices",
+    "nodeIslands",
     "ambient",
     "overridesAmbient",
     "remainder",
