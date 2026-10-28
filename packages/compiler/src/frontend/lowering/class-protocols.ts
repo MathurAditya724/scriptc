@@ -501,8 +501,9 @@ export class ClassProtocols {
       }
       // A Pick or Omit view's values are instances of the class it views,
       // or of any other program class that has the view's members.
-      if (this.pickOfProgramClass(type)) {
-        add(type.getAliasTypeArguments()[0]!);
+      const viewed = this.pickViewOf(type, 0);
+      if (viewed !== null) {
+        add(viewed);
         for (const other of this.classesAcceptedBy(type))
           for (const related of this.classFamily(other, facts)) out.add(related);
         return;
@@ -698,15 +699,67 @@ export class ClassProtocols {
   /** `Pick<C, K>` or `Omit<C, K>` over a program class instance type: a
    * view of the class's own members, spelled inline instead of as an
    * interface. Like an interface the class matches, a view that exposes a
-   * method needs a live receiver (see protocol). */
+   * method needs a live receiver (see protocol). A program type alias of
+   * such a view names the same view (`type V = Pick<C, K>`), so its
+   * declaration is resolved to the Pick/Omit it spells. */
   private pickOfProgramClass(type: ts.Type): boolean {
+    return this.pickViewOf(type, 0) !== null;
+  }
+
+  /** The program class instance this view views, resolving program type
+   * aliases of views (`type A = B`, `type B = Pick<C, K>`) up to a small
+   * depth; null for everything else. */
+  private pickViewOf(type: ts.Type, depth: number): ts.Type | null {
+    if (depth > 8) return null;
     const alias = type.getAliasSymbol();
-    if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
-      return false;
-    if (!alias.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile))
-      return false;
-    const source = type.getAliasTypeArguments()[0];
-    return source !== undefined && this.isProgramClassInstance(source);
+    if (alias === undefined) return null;
+    if (this.isPickOrOmitAlias(alias)) {
+      const source = type.getAliasTypeArguments()[0];
+      return source !== undefined && this.isProgramClassInstance(source) ? source : null;
+    }
+    const declaration = this.programTypeAlias(alias);
+    return declaration === null ? null : this.pickViewNode(declaration.type, depth + 1);
+  }
+
+  /** The class instance a view's type node views. The resolved type of a
+   * program alias is the alias itself, so the reference is read by name:
+   * `Pick<C, K>` / `Omit<C, K>` keep the class it views, and another alias
+   * is followed through its declaration. */
+  private pickViewNode(node: ts.TypeNode, depth: number): ts.Type | null {
+    if (depth > 8) return null;
+    while (ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (!ts.isTypeReferenceNode(node)) return null;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(node.typeName));
+    if (symbol === undefined) return null;
+    if (this.isPickOrOmitAlias(symbol)) {
+      const sourceNode = node.typeArguments?.nodes[0];
+      const source =
+        sourceNode === undefined
+          ? undefined
+          : attempt(() => this.checker.getTypeFromTypeNode(sourceNode));
+      return source !== undefined && this.isProgramClassInstance(source) ? source : null;
+    }
+    const declaration = this.programTypeAlias(symbol);
+    return declaration === null ? null : this.pickViewNode(declaration.type, depth + 1);
+  }
+
+  /** The lib's `Pick` or `Omit` utility type. */
+  private isPickOrOmitAlias(symbol: ts.Symbol): boolean {
+    const name = ts.symbolName(symbol);
+    if (name !== "Pick" && name !== "Omit") return false;
+    return symbol.declarations.every(
+      (declaration) => declaration.getSourceFile().isDeclarationFile,
+    );
+  }
+
+  /** The program's own declaration of a type alias, if the symbol has one. */
+  private programTypeAlias(symbol: ts.Symbol): ts.TypeAliasDeclaration | null {
+    const declaration = symbol.declarations.find(
+      (candidate) =>
+        ts.isTypeAliasDeclaration(candidate) &&
+        !ts.getSourceFileOfNode(candidate).isDeclarationFile,
+    );
+    return declaration !== undefined && ts.isTypeAliasDeclaration(declaration) ? declaration : null;
   }
 
   /** String-keyed dictionaries (`Record<string, V>`, `{ [key: string]: V }`)

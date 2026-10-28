@@ -85,3 +85,49 @@ handler.press?.();
 `);
   expect(kinds["handler"]).toBe("record");
 });
+
+test("a named alias of Pick over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+  peek(): number { return this.count; }
+}
+type Tickable = Pick<Counter, "tick">;
+const counter = new Counter();
+const view: Tickable = counter;
+console.log(view.tick(), counter.count);
+`);
+  expect(kinds["view"]).toBe("dyn");
+  expect(kinds["counter"]).toBe("object");
+});
+
+test("a named alias of Omit over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+  peek(): number { return this.count; }
+}
+type Peekable = Omit<Counter, "tick">;
+const counter = new Counter();
+const view: Peekable = counter;
+console.log(view.peek());
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("an alias of an alias of Pick over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+}
+type Tickable = Pick<Counter, "tick">;
+type AlsoTickable = Tickable;
+const counter = new Counter();
+const view: AlsoTickable = counter;
+console.log(view.tick());
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
