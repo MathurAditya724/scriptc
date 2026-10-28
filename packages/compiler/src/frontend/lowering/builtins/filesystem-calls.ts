@@ -26,7 +26,13 @@ import {
   funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import {
+  lowerBuiltinOptionalDefault,
+  optionMember,
+  literalBoolOptions,
+  stripTypeCasts,
+} from "./arguments.js";
+import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
   lowerFsSyncBufferWindow,
@@ -1067,9 +1073,16 @@ export function lowerFsWriteOptionsCall(
     }
   }
   const optionValues: WriteOptionValue[] = [];
-  let ok = ts.isObjectLiteralExpression(optsNode);
-  if (ok) {
-    for (const p of (optsNode as ts.ObjectLiteralExpression).properties.nodes) {
+  // The options argument may be a const BINDING (`const OPTS =
+  // {encoding: "utf-8", mode: 0o600} as const`, shared by every write of
+  // a file): the literal behind it is the options record. Resolved only
+  // through type casts and a never-reassigned const, and only when every
+  // value is a literal — the const evaluated them once, so staging them
+  // again at the write site is the same evaluation.
+  const optsLiteral = optionsLiteralOf(lowerer, optsNode);
+  let ok = optsLiteral !== null;
+  if (optsLiteral !== null) {
+    for (const p of optsLiteral.properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         ok = false;
@@ -1114,6 +1127,40 @@ export function lowerFsWriteOptionsCall(
     );
   }
   return finishWrite(optionValues);
+}
+
+/** The object literal behind a write options argument: the literal
+ * itself, or the initializer of the const binding that holds it (through
+ * type casts and parentheses). A const's values must all be literals —
+ * inlining anything else would re-evaluate it at the write site. */
+function optionsLiteralOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): ts.ObjectLiteralExpression | null {
+  // stripTypeCasts also strips parentheses: `({...} as const)` is the literal.
+  const unwrap = (expr: ts.Expression): ts.Expression => stripTypeCasts(expr);
+  const bare = unwrap(node);
+  if (ts.isObjectLiteralExpression(bare)) return bare;
+  if (!ts.isIdentifier(bare)) return null;
+  const init = constInitializerOf(lowerer, bare);
+  if (init === null) return null;
+  const value = unwrap(init);
+  if (!ts.isObjectLiteralExpression(value)) return null;
+  const literalValue = (expr: ts.Expression): boolean => {
+    const v = unwrap(expr);
+    if (ts.isStringLiteral(v) || ts.isNoSubstitutionTemplateLiteral(v)) return true;
+    if (ts.isNumericLiteral(v)) return true;
+    return (
+      ts.isPrefixUnaryExpression(v) &&
+      (v.operator === ts.SyntaxKind.MinusToken || v.operator === ts.SyntaxKind.PlusToken) &&
+      ts.isNumericLiteral(v.operand)
+    );
+  };
+  for (const p of value.properties.nodes) {
+    const m = optionMember(p);
+    if (!m || !literalValue(m.value)) return null;
+  }
+  return value;
 }
 
 export function lowerFsReadPathCall(
