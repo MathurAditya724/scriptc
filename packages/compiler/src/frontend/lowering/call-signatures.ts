@@ -1125,13 +1125,28 @@ export function lambdaSignature(
   // type of `off`) against a `() => void` element. The decision itself
   // is the one the adoption block below takes for mappable inferred
   // returns, so this only changes programs that do not compile today.
+  //
+  // The contextual signature is looked up at most once per lambda: both
+  // this decision and the adoption block below need it, and the checker
+  // call is not free in a compile this hot.
+  let ctxSigsMemo: readonly ts.Signature[] | undefined;
+  const contextualSigs = (): readonly ts.Signature[] => {
+    if (ctxSigsMemo === undefined) {
+      const ctxType = lowerer.checker.getContextualType(node);
+      ctxSigsMemo = ctxType
+        ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
+        : [];
+    }
+    return ctxSigsMemo;
+  };
   let ret =
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
       : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-          voidContextualSlot(lowerer, node)
+          voidContextualSlot(lowerer, node, contextualSigs)
         ? VOID
         : lowerer.declaredReturnType(node, node);
+
   ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
   // A contextually-typed arrow/function EXPRESSION whose slot signature
   // returns a composite type the inferred return doesn't spell adopts
@@ -1180,13 +1195,15 @@ export function lambdaSignature(
     // declared in USER code: stdlib callback slots (flatMap's
     // `U | readonly U[]`, sort comparators) have intrinsic lowerings
     // that inspect the INFERRED type, so they must not widen.
-    const ctxType =
-      literalMethod && ts.isMethodDeclaration(node) && node.parent
-        ? objectLiteralMethodSlot(lowerer, node, node.parent)
-        : lowerer.checker.getContextualType(node);
-    const ctxSigs = ctxType
-      ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType))
-      : [];
+    let ctxSigs: readonly ts.Signature[];
+    if (literalMethod && ts.isMethodDeclaration(node) && node.parent) {
+      const methodCtx = objectLiteralMethodSlot(lowerer, node, node.parent);
+      ctxSigs = methodCtx
+        ? lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(methodCtx))
+        : [];
+    } else {
+      ctxSigs = contextualSigs();
+    }
     const ctxDecl = ctxSigs.length === 1 ? ctxSigs[0]!.declaration : undefined;
     const ctxRetRaw =
       ctxDecl && !ts.getSourceFileOfNode(ctxDecl).isDeclarationFile
@@ -1294,6 +1311,7 @@ function isSatisfiesOperand(literal: ts.Node): boolean {
 function voidContextualSlot(
   lowerer: Lowerer,
   node: ts.ArrowFunction | ts.FunctionExpression,
+  contextualSigs: () => readonly ts.Signature[],
 ): boolean {
   if (node.type) return false;
   if (node.asteriskToken) return false;
@@ -1305,9 +1323,7 @@ function voidContextualSlot(
     ts.isObjectLiteralExpression(node.parent.parent)
   )
     return false;
-  const ctxType = lowerer.checker.getContextualType(node);
-  if (!ctxType) return false;
-  const sigs = lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType));
+  const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
     (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
