@@ -34,6 +34,9 @@ export interface NativeLinkFeatures {
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS variant of the event loop unit. */
+  nodeIsland?: boolean;
   /** Module namespace objects as checked-dynamic values link
    * scr_module_namespace.c; absent (false) otherwise. */
   moduleNamespace?: boolean;
@@ -55,18 +58,35 @@ export interface NativeLinkFeatures {
    * Absent (false) for programs without them. */
   handleProps?: boolean;
   declAdopt?: boolean;
+  typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: scr_mime.c. */
+  mime?: boolean;
+  /** `--large-pages`: scr_text_pages.c, which moves the executable's code
+   * onto transparent huge pages at startup. Absent (false) without it. */
+  largePages?: boolean;
+  /** Web streams in checked-dynamic code: scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: scr_abort.c, unless the program
+   * links the fetch unit, which has them. */
+  abortSignal?: boolean;
+  /** util.debounce and util.throttle: scr_util_timing.c. */
+  utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** createRequire's computed require and require.resolve link
+   * scr_require.c; absent (false) otherwise. */
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;

@@ -14,6 +14,8 @@ import { observeSourceText } from "./ts7/ast-node.js";
 export type FrontendInputProbe =
   /** `identity` (fileIdentity) lets a later check skip hashing the file. */
   | { op: "file"; path: string; digest: string; identity?: string }
+  /** A read of the file's raw bytes (files that need not be text). */
+  | { op: "bytes"; path: string; digest: string }
   | { op: "read-error"; path: string }
   | { op: "kind"; path: string; kind: "file" | "directory" | "other" | "missing" }
   | { op: "entries"; path: string; files: string[]; directories: string[] }
@@ -84,6 +86,22 @@ function readWithIdentity(path: string): { text: string; identity: string | null
   return { text, identity: settled && after === identity ? identity : null };
 }
 
+/** Two reads of one file that saw the same content, as one probe: a read
+ * before the file had been unchanged for IDENTITY_SETTLE_MS records no
+ * identity, and a later read of the same bytes does. The probe keeps the
+ * identity, which the settled read proved for that content. Null when the
+ * reads differ in anything else. */
+function sameFileContent(
+  previous: FrontendInputProbe,
+  probe: FrontendInputProbe,
+): FrontendInputProbe | null {
+  if (previous.op !== "file" || probe.op !== "file" || previous.digest !== probe.digest)
+    return null;
+  if (previous.identity === undefined) return probe;
+  if (probe.identity === undefined || probe.identity === previous.identity) return previous;
+  return null;
+}
+
 function pathKind(path: string): Extract<FrontendInputProbe, { op: "kind" }>["kind"] {
   try {
     const info = statSync(path);
@@ -109,6 +127,23 @@ let synchronousTracker: FrontendInputTracker | undefined;
 export class FrontendInputTracker {
   private readonly probes = new Map<string, FrontendInputProbe>();
   private stable = true;
+  /** The digests `previous` recorded for files read with a settled identity. */
+  private readonly known = new Map<string, { identity: string; digest: string }>();
+
+  /** `previous` is the snapshot of an earlier run whose cache entry is being
+   * rebuilt: a file whose settled identity has not changed since then has the
+   * content it hashed, so its digest is not computed again. */
+  constructor(previous?: FrontendInputSnapshot) {
+    for (const probe of previous?.probes ?? [])
+      if (probe.op === "file" && probe.identity !== undefined)
+        this.known.set(probe.path, { identity: probe.identity, digest: probe.digest });
+  }
+
+  /** The digest an earlier run recorded for `path` with this identity. */
+  knownDigest(path: string, identity: string): string | undefined {
+    const known = this.known.get(path);
+    return known?.identity === identity ? known.digest : undefined;
+  }
 
   run<T>(fn: () => T): T {
     const parent = activeTracker.getStore();
@@ -142,12 +177,17 @@ export class FrontendInputTracker {
     const key = `${probe.op}\0${probe.path}`;
     if (probe.op === "text" && this.probes.has(key)) return;
     const previous = this.probes.get(key);
-    if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(probe)) {
+    const merged = previous === undefined ? null : sameFileContent(previous, probe);
+    if (
+      merged === null &&
+      previous !== undefined &&
+      JSON.stringify(previous) !== JSON.stringify(probe)
+    ) {
       // An input changed while this frontend was running.  The build may
       // still finish normally, but it is not safe to publish as a cache key.
       this.stable = false;
     }
-    this.probes.set(key, probe);
+    this.probes.set(key, merged ?? probe);
     if (probe.op === "file") {
       // A successful content read supersedes earlier existence probes for the
       // same path only when they also observed a file. A missing/non-file
@@ -231,11 +271,30 @@ export function trackedReadFile(path: string): string | null {
   if (virtual !== undefined) return virtual;
   try {
     const { text, identity } = readWithIdentity(path);
-    const digest = frontendSourceDigest(text);
+    const known =
+      identity === null
+        ? undefined
+        : (synchronousTracker ?? activeTracker.getStore())?.knownDigest(path, identity);
+    const digest = known ?? frontendSourceDigest(text);
     record(
       identity === null ? { op: "file", path, digest } : { op: "file", path, digest, identity },
     );
     return text;
+  } catch {
+    record({ op: "read-error", path });
+    return null;
+  }
+}
+
+/** A file's raw bytes, recorded by their digest. */
+export function trackedReadBytes(path: string): Uint8Array | null {
+  path = resolve(path);
+  const virtual = virtualSources.get(path);
+  if (virtual !== undefined) return new TextEncoder().encode(virtual);
+  try {
+    const bytes = new Uint8Array(readFileSync(path));
+    record({ op: "bytes", path, digest: createHash("sha256").update(bytes).digest("hex") });
+    return bytes;
   } catch {
     record({ op: "read-error", path });
     return null;
@@ -376,6 +435,15 @@ export function frontendInputsStillMatch(
           return true;
         try {
           return frontendSourceDigest(readFileSync(probe.path, "utf8")) === probe.digest;
+        } catch {
+          return false;
+        }
+      }
+      case "bytes": {
+        try {
+          return (
+            createHash("sha256").update(readFileSync(probe.path)).digest("hex") === probe.digest
+          );
         } catch {
           return false;
         }
@@ -535,6 +603,8 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
           /^[0-9a-f]{64}$/.test(value.digest) &&
           (value.identity === undefined || typeof value.identity === "string")
         );
+      case "bytes":
+        return typeof value.digest === "string" && /^[0-9a-f]{64}$/.test(value.digest);
       case "read-error":
         return true;
       case "kind":

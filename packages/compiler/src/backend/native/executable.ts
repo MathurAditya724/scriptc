@@ -191,9 +191,14 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // createRequire's computed require and require.resolve.
+  unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
-  unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
+  unit(
+    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    "scr_event_target.c",
+  ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
   // Module namespace objects as checked-dynamic values.
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
@@ -215,18 +220,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Blob and File (every blob.* call selects dynAsync, whose unit boxes
   // their reads as dyn promises).
   unit((u) => u.opts.dynAsync, "scr_blob.c"),
-  // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
-  // libz on the default host-clang build, vendored objects on Zig builds)
-  // also serves the native fetch's gzip decoder — spread exactly once.
+  // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
+  // objects also serve the native fetch's gzip decoder — spread exactly once.
   unitArgs((u) =>
     u.opts.zlib
-      ? isZigDriver(u.driver)
-        ? ["-I", vendorZlibDir(), u.rt(join(u.rtDir, "scr_zlib.c")), ...u.zlibObjects]
-        : [u.rt(join(u.rtDir, "scr_zlib.c"))]
+      ? ["-I", vendorZlibDir(), u.rt(join(u.rtDir, "scr_zlib.c")), ...u.zlibObjects]
       : u.nativeFetch
-        ? isZigDriver(u.driver)
-          ? ["-I", vendorZlibDir(), ...u.zlibObjects]
-          : []
+        ? ["-I", vendorZlibDir(), ...u.zlibObjects]
         : [],
   ),
   // Brotli (scr_brotli.c) plugs into the zlib engine and links the
@@ -249,6 +249,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // events.once with options registers through the emitter and
   // event-target units.
   unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
+  unit((u) => u.opts.mime === true, "scr_mime.c"),
+  unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
+  unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
+  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
+  unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
+  unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
@@ -300,6 +306,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
+  unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
   // for await over checked-dynamic values that may hold native streams.
@@ -362,6 +369,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.nodeIsland === true, "scr_node_island.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];
@@ -384,12 +392,18 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
-  // Checked objects carry the dynamic tier's shapes (scr_json.c's SCR_JS_TIER build); only
+  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
   // programs with dynamic-tier code select it.
   { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
+  // scr_async.c's native promise reactions, which the web streams unit uses,
+  // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
+  // and scr_fetch.c's bodies of its streams.
+  { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
+  { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {
@@ -669,11 +683,11 @@ export async function compileCInternal(
   let lreObjects = regex
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
-  // Vendored zlib is the Zig story — default host-clang builds keep the exact
-  // historical `-lz` system link (see CcOptions.zlib). The native fetch's
-  // gzip decoder rides the same objects/link.
+  // Every driver links the vendored zlib (the copy Node bundles), so
+  // compressed bytes match Node's. The native fetch's gzip decoder rides the
+  // same objects.
   let zlibObjects =
-    ((opts.zlib ?? false) || nativeFetch) && isZigDriver(driver)
+    (opts.zlib ?? false) || nativeFetch
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   const materializeVendorPrerequisites = async (
@@ -822,11 +836,6 @@ export async function compileCInternal(
     ...(opts.linkInputs ?? []),
     ...(opts.systemLibraries ?? []).map((name) => `-l${name}`),
     ...(opts.frameworks ?? []).flatMap((name) => ["-framework", name]),
-    // GNU ld resolves libraries from left to right and commonly enables
-    // --as-needed: host-clang libz must follow scr_zlib.c/scr_fetch.c and every
-    // generated/native input that references inflate symbols. Cross
-    // and targetless Zig builds use vendored zlib objects in the input section above.
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     // glibc keeps libm separate from libc. This must trail the generated
     // program and every native FFI input because GNU ld resolves archives
@@ -1080,7 +1089,6 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
@@ -1093,7 +1101,6 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
     ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
@@ -1487,12 +1494,18 @@ export async function compileCInternal(
             missed: false,
           };
         });
-        const shardWidth = Math.min(8, availableParallelism());
-        for (let i = 0; i < entries.length; i += shardWidth) {
-          await Promise.all(
-            entries.slice(i, i + shardWidth).map(async (entry) => {
+        // Up to eight clangs (one per available core), each taking the next
+        // shard as it finishes: shards differ in size, and a fixed batch
+        // would wait for its slowest member before starting the next. A
+        // failed shard stops the others from taking more work.
+        let nextShard = 0;
+        let failed = false;
+        await Promise.all(
+          Array.from({ length: Math.min(entries.length, 8, availableParallelism()) }, async () => {
+            while (!failed && nextShard < entries.length) {
+              const entry = entries[nextShard++]!;
               await writeFile(entry.sourcePath, entry.source());
-              if (await copyValidCachedFile(entry.cachePath, entry.staged)) return;
+              if (await copyValidCachedFile(entry.cachePath, entry.staged)) continue;
               entry.missed = true;
               await runClang([
                 ...programCompilerArgs,
@@ -1501,10 +1514,13 @@ export async function compileCInternal(
                 entry.sourcePath,
                 "-o",
                 entry.staged,
-              ]);
-            }),
-          );
-        }
+              ]).catch((error: unknown) => {
+                failed = true;
+                throw error;
+              });
+            }
+          }),
+        );
         const arArgv = isZigDriver(driver) ? [driver.argv[0]!, "ar"] : ["ar"];
         const merged = await localizeLibraryObjects(
           driver,
@@ -1514,6 +1530,8 @@ export async function compileCInternal(
           [],
           programPublicSymbols,
           `${stem}.program`,
+          undefined,
+          { inProcessElf: true },
         );
         const publishable = entries.filter((entry) => entry.missed);
         if (publishable.length > 0) {

@@ -1,3 +1,4 @@
+import { arrayClassDescriptor } from "./classes.js";
 import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
@@ -17,12 +18,13 @@ import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./
 import {
   ASSERT_VERDICT_LIB_FNS,
   LIB_FN_SYMS,
+  PURE_MATH_LIB_FNS,
   mockTimerSym,
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
-import { caBytes } from "./lib-abi.js";
+import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 import { registerReplay } from "./emit-journal.js";
@@ -216,7 +218,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitCoroAwait(null);
     return { name: "", type: e.type };
   }
-  if (host.wasi && e.fn === "async.awaitDyn") {
+  if (host.coroAwait && e.fn === "async.awaitDyn") {
     const value = host.emitExpr(e.args[0]!);
     host.declare(`declare ptr @scr_dyn_promise_of(ptr)`);
     const promise = B.tmp();
@@ -228,15 +230,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${isPromise} = icmp ne ptr ${promise}, null`);
     B.condBr(isPromise, wait, hop);
     B.startBlock(wait);
-    host.emitWasiSuspend(promise);
+    host.emitCoroAwait(promise);
     B.br(ready);
     B.startBlock(hop);
-    host.emitWasiSuspend(null);
+    host.emitCoroAwait(null);
     B.br(ready);
     B.startBlock(ready);
-    host.declare(`declare ptr @scr_await_dyn_value_settled(ptr)`);
+    const extract = host.wasi ? "scr_await_dyn_value_settled" : "scr_coro_await_dyn_value";
+    host.declare(`declare ptr @${extract}(ptr)`);
     const result = B.tmp();
-    B.line(`${result} = call ptr @scr_await_dyn_value_settled(ptr ${value.name})`);
+    B.line(`${result} = call ptr @${extract}(ptr ${value.name})`);
     const output = host.own({ name: result, type: e.type });
     host.emitPendingCheck();
     return output;
@@ -276,6 +279,82 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "array.speciesCreate") {
+    // The receiver is borrowed; the call answers a new reference.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const length = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_arr_species_create(ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_create(ptr ${receiver.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesFinish") {
+    // The instance is borrowed; the method's result moves into the call,
+    // which answers it or the instance that holds its elements.
+    const instance = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const setLength = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_species_finish(ptr, ptr, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_finish(ptr ${instance.name}, ptr ${result.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesAdopt") {
+    // The receiver is borrowed; the method's result moves into the call,
+    // which answers it or the species instance that replaces it.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    const setLength = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_arr_species_adopt(ptr, ptr, double, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_adopt(ptr ${receiver.name}, ptr ${result.name}, double ${length.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.dynIsClass") {
+    const className = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError("llvm emitter bug: array.dynIsClass needs a class name");
+    const value = emitBorrowedInput(host, e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_dyn_is_array_class(ptr, ptr)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call zeroext i1 @scr_dyn_is_array_class(ptr ${value.name}, ptr ${arrayClassDescriptor(className)})`,
+    );
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "array.classConstructAdopt") {
+    const className = e.args[0]!.kind === "strLit" ? e.args[0]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError(
+        "llvm emitter bug: array.classConstructAdopt needs a class name",
+      );
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_class_construct_adopt(ptr, ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_class_construct_adopt(ptr ${arrayClassDescriptor(className)}, ptr ${result.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
   }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
@@ -671,11 +750,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         // which also takes those streams.
         e.fn === "stream.unboxDyn" && host.usesDynBuiltinStream
         ? "scr_dyn_builtin_stream_unbox"
-        : // for await over a checked-dynamic value iterates a native
-          // stream behind it (scr_dyn_for_await_stream.c)
-          e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
-          ? "scr_stream_dyn_async_iterator_open"
-          : LIB_FN_SYMS[e.fn]);
+        : e.fn === "stream.unboxDynStage" && host.usesDynBuiltinStream
+          ? "scr_dyn_builtin_stream_unbox_stage"
+          : // for await over a checked-dynamic value iterates a native
+            // stream behind it (scr_dyn_for_await_stream.c)
+            e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+            ? "scr_stream_dyn_async_iterator_open"
+            : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
+                host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
+              ? `${LIB_FN_SYMS[e.fn]}_sloppy`
+              : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,
@@ -777,7 +861,8 @@ function emitSymbolLibCall(
     return { name: "", type: e.type };
   }
   const t = B.tmp();
-  B.line(`${t} = call ${retDecl} @${sym}(${argList})`);
+  const attrs = PURE_MATH_LIB_FNS.has(e.fn) ? " nounwind willreturn memory(none)" : "";
+  B.line(`${t} = call ${retDecl} @${sym}(${argList})${attrs}`);
   // The result joins its frame BEFORE the pending check so an unwind
   // releases the dummy (NULL for refcounted returns) harmlessly.
   const out = host.own({ name: t, type: e.type });
@@ -1025,14 +1110,44 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "record.isFrozen") {
     // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
     // its second-highest bit; an immortal word sets the highest one too.
-    const value = host.emitReadReceiver(e.args[0]!);
+    // Where the record's shape may be published, an immortal word reads as
+    // frozen: publish() freezes what it reaches, as Node's deep freeze does.
+    const receiver = e.args[0]!;
+    const value = host.emitReadReceiver(receiver);
     const S = host.sizeType;
     const rc = host.B.tmp(),
-      top = host.B.tmp(),
-      t = host.B.tmp();
+      top = host.B.tmp();
+    let t = host.B.tmp();
     host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
     host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
     host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    if (
+      receiver.type.kind === "record" &&
+      host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
+    )
+      t = orPublished(host, t, rc);
+    return { name: t, type: e.type };
+  }
+  if (
+    (e.fn === "array.isFrozen" || e.fn === "collection.isExtensible") &&
+    host.publishedTypes?.containerPublished(e.args[0]!.type) === true
+  ) {
+    // publish() freezes what it reaches, as Node's deep freeze does: a
+    // published array is frozen, and a published Map or Set is not extensible.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const answer = callRuntime(
+      host,
+      e.fn === "array.isFrozen" ? "scr_arr_is_frozen" : "scr_map_is_extensible",
+      "i1",
+      [ptr(value.name)],
+    );
+    const rc = host.B.tmp();
+    host.B.line(`${rc} = load ${host.sizeType}, ptr ${value.name}`);
+    if (e.fn === "array.isFrozen") return { name: orPublished(host, answer, rc), type: e.type };
+    const mortal = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${mortal} = icmp ne ${host.sizeType} ${rc}, -1`);
+    host.B.line(`${t} = and i1 ${answer}, ${mortal}`);
     return { name: t, type: e.type };
   }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
@@ -1143,12 +1258,23 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+      if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
+      return host.emitGenericLibCall(e);
     case "collection":
     case "record":
     case "disposable":
     case "punycode":
     case "constants":
     case "promise":
+    case "navigator":
+    case "mime":
+      return host.emitGenericLibCall(e);
+    case "nodeIsland":
+      return host.emitGenericLibCall(e);
+    case "webstream":
+      // A stream's start, pull and cancel steps run as promise jobs, so
+      // a program with the classes runs its event loop.
+      if (e.fn === "webstream.class") host.usesTimers = true;
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
@@ -1164,13 +1290,36 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   }
 }
 
+/** `array.foreignThrow`: the checked conversion's TypeError for a foreign
+ * element read into a typed result. Always throws; the result is a dummy
+ * of the replaced read's type (the error.argTypeThrow pattern). */
+function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const arr = host.emitExpr(e.args[0]!);
+  const index = host.emitExpr(e.args[1]!);
+  const want = host.emitExpr(e.args[2]!);
+  host.declare(`declare void @scr_arr_foreign_throw(ptr, double, ptr)`);
+  B.line(
+    `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
+  );
+  const ty = host.llType(e.type);
+  if (ty === "void") {
+    host.emitAlwaysPendingUnwind();
+    return { name: "", type: e.type };
+  }
+  const dummy = ty === "double" ? "0.0" : ty === "i1" ? "false" : "null";
+  const out = host.own({ name: dummy, type: e.type });
+  host.emitAlwaysPendingUnwind();
+  return out;
+}
+
 /** The settlement adapter of Promise.all's tuple form for the builder
  * `fnName`, which fulfills the result with the builder's tuple. */
 function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrType): string {
   const key = `allTuple:${fnName}`;
   let adapter = host.resolveThunks.get(key);
   if (adapter !== undefined) return adapter;
-  adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+  adapter = host.contentSymbol("sc_all_tuple_", key);
   host.resolveThunks.set(key, adapter);
   host.journal?.allocated(adapter, "allTupleAdapterFor", [fnName, tuple]);
   const rc = vAdapters(host.shapeHost, tuple);
@@ -1233,4 +1382,15 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${all}, ptr @${adapter})`);
   B.line(`call void @scr_promise_release(ptr ${all})`);
   return host.own({ name: result, type: e.type });
+}
+
+/** `frozen` or'ed with "the object whose rc word is `rc` is published": an
+ * immortal word (all ones), the test of the published write guards
+ * (emitter.ts emitPublishedTest). */
+function orPublished(host: LlvmEmitterContext, frozen: string, rc: string): string {
+  const immortal = host.B.tmp(),
+    t = host.B.tmp();
+  host.B.line(`${immortal} = icmp eq ${host.sizeType} ${rc}, -1`);
+  host.B.line(`${t} = or i1 ${frozen}, ${immortal}`);
+  return t;
 }

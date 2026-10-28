@@ -1,3 +1,4 @@
+import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
@@ -1740,7 +1741,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // lowerVarDecl / collectGlobals BEFORE any call lowering runs — and
     // inspect/format/formatWithOptions plus parseArgs through the util spoke
     // (lower-inspect.ts: per-type synthesized traversal helpers,
-    // compile-time format strings, checked-dynamic config/result for
+    // compile-time format strings and the runtime formatter for the others,
+    // checked-dynamic config/result for
     // parseArgs), which both dispatch paths try before the generic table.
     // parseArgs is tabled as well so the generated surface manifest records
     // the dedicated static member; the spoke owns its optional arity and
@@ -1767,6 +1769,67 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         ],
       },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
+      aborted: {
+        fn: "util.aborted",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      diff: {
+        fn: "util.diff",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      debounce: {
+        fn: "util.debounce",
+        params: [DYN, DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      throttle: {
+        fn: "util.throttle",
+        params: [DYN, DYN, DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
+      convertProcessSignalToExitCode: {
+        fn: "util.signalExitCode",
+        params: [DYN],
+        result: F64,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+      },
+      // The deprecated helpers report DEP0044 and DEP0060 on their first call.
+      isArray: {
+        fn: "util.isArrayDeprecated",
+        params: [DYN],
+        result: BOOL,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+      },
+      _extend: {
+        fn: "util.extend",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "optional", type: DYN, defaultValue: undefined },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+      },
       parseEnv: { fn: "util.parseEnv", params: [DYN], result: DYN },
       getSystemErrorName: {
         fn: "util.getSystemErrorName",
@@ -2161,8 +2224,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
-    // The { withFileTypes: true } Dirent form.
-    readdirSync: ["fs.readdirTypesSync"],
+    // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
+    readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
     // The { throwIfNoEntry } probe form.
     statSync: ["fs.statProbeSync"],
     // realpathSync and realpathSync.native read as function values.
@@ -3217,6 +3280,9 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
   if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // JavaScript reads web stream values (read results, sources, strategies)
+  // as checked-dynamic objects (web-streams-dyn.ts).
+  if (isWebStreamMemberInJavaScript(lowerer, access)) return;
   // Name the container the way the source reads: the global's name when
   // the receiver IS a stdlib global (Math, process), the dotted path for
   // a member of one (process.stdout — its TYPE text would be the useless

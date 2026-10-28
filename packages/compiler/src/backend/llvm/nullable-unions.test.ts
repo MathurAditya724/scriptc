@@ -7,7 +7,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
-import { NullableUnions } from "./nullable-unions.js";
+import { isObjectArm, isPointerIdentityArm, NullableUnions } from "./nullable-unions.js";
 
 const loc = { file: "nullable-unions.ts", start: 0, end: 0 };
 const a: IrType = { kind: "record", shapeId: "a" };
@@ -110,4 +110,39 @@ test("library, lifetime-region and debug builds keep record unions boxed", () =>
   expect(new NullableUnions(module(unions), false).get("ab")).toBeNull();
   expect(new NullableUnions(module(unions, { lifetimeRegions: true })).get("ab")).toBeNull();
   expect(new NullableUnions(module(unions)).shapes("ab")).not.toBeNull();
+});
+
+test("function arms are nullable pointers compared by identity root", () => {
+  const fn: IrType = { kind: "func", params: [F64], ret: F64 };
+  const unions = new NullableUnions(
+    module([
+      { id: "fu", arms: [fn, UNDEFINED_T] },
+      { id: "fnu", arms: [NULL_T, fn, UNDEFINED_T] },
+      { id: "ff", arms: [fn, F64] },
+    ]),
+  );
+  expect(unions.single("fu")).toMatchObject({ refTag: 0, unitTag: 1, nullTag: -1, arm: fn });
+  expect(unions.single("fnu")).toMatchObject({ refTag: 1, unitTag: 2, nullTag: 0 });
+  expect(unions.get("ff")).toBeNull();
+  const single = unions.single("fu")!;
+  // Always truthy, but `===` compares adapters by the function they adapt.
+  expect(isObjectArm(single)).toBe(true);
+  expect(isPointerIdentityArm(single)).toBe(false);
+  expect(unions.armTypes().get("fu")).toEqual(fn);
+});
+
+test("typed array arms are nullable pointers compared by identity", () => {
+  const i32: IrType = { kind: "bytes", elem: "i32" };
+  const unions = new NullableUnions(
+    module([
+      { id: "iu", arms: [i32, UNDEFINED_T] },
+      { id: "nin", arms: [NULL_T, i32, UNDEFINED_T] },
+      { id: "if", arms: [i32, F64] },
+    ]),
+  );
+  expect(unions.single("iu")).toMatchObject({ refTag: 0, unitTag: 1, nullTag: -1, arm: i32 });
+  expect(unions.single("nin")).toMatchObject({ refTag: 1, unitTag: 2, nullTag: 0, arm: i32 });
+  expect(unions.get("if")).toBeNull();
+  expect(isObjectArm(unions.single("iu")!)).toBe(true);
+  expect(isPointerIdentityArm(unions.single("iu")!)).toBe(true);
 });

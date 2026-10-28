@@ -368,6 +368,34 @@ static bool scr_sa_pf_on(void) {
   return s > 0;
 }
 
+/* fork() copies only the calling thread, so a child has no helper. The
+ * prepare handler takes the lock, so no other thread holds it across the
+ * fork. The child handler gives the child fresh helper state: an empty ring,
+ * no busy range or waiters, new conditions (the parent's can still record
+ * the helper as a waiter), and the heap watermarks cleared. Its first
+ * request then starts a helper of its own. */
+static bool scr_sa_pf_atfork;
+
+static void scr_sa_pf_fork_prepare(void) { pthread_mutex_lock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_parent(void) { pthread_mutex_unlock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_child(void) {
+  (void)pthread_mutex_init(&scr_sa_pf_lock, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_cond, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_done, NULL);
+  scr_sa_pf_head = scr_sa_pf_tail = 0;
+  scr_sa_pf_busy = (ScrSaPfRange){NULL, NULL};
+  scr_sa_pf_forgetting = 0;
+  scr_sa_pf_waiting = false;
+  scr_sa_pf_started = false;
+#ifdef SCR_SA_PF_HEAP
+  scr_sa_pf_heap_mode = 0;
+  scr_sa_pf_brk0 = scr_sa_pf_brk = NULL;
+  scr_sa_pf_heap_big = false;
+#endif
+}
+
 /* Asks the helper to fault in [lo, hi) (page aligned). Dropped when the
  * ring is full: the owner then faults those pages itself. */
 static void scr_sa_prefault(char *lo, char *hi) {
@@ -375,6 +403,14 @@ static void scr_sa_prefault(char *lo, char *hi) {
   pthread_mutex_lock(&scr_sa_pf_lock);
   if (!scr_sa_pf_started) {
     scr_sa_pf_started = true;
+    /* Once per process: a child inherits the parent's handlers. */
+    if (!scr_sa_pf_atfork &&
+        pthread_atfork(scr_sa_pf_fork_prepare, scr_sa_pf_fork_parent, scr_sa_pf_fork_child) != 0) {
+      pthread_mutex_unlock(&scr_sa_pf_lock);
+      atomic_store_explicit(&scr_sa_pf_state, -1, memory_order_relaxed);
+      return;
+    }
+    scr_sa_pf_atfork = true;
 #ifdef SCR_SA_PF_HEAP
     /* Nobody waits on the condition yet: give it the monotonic clock for
      * the helper's polls (no polls without it). */
@@ -761,10 +797,12 @@ static void scr_sa_large_note(void *p, size_t n) {
  * once; arena i spans [region + i * arena_span, + arena_span) and is split
  * into class slices exactly like the single-threaded reservation. */
 #define SCR_SA_ARENAS 32u
+#define SCR_SA_MIN_ARENAS 4u /* the fewest arenas a limited host gets before smaller slices */
 static pthread_mutex_t scr_sa_region_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic(uintptr_t) scr_sa_region; /* 0 until reserved */
 static uintptr_t scr_sa_arena_span;
 static unsigned scr_sa_region_shift;
+static unsigned scr_sa_region_arenas; /* arenas the region holds, a power of two */
 static bool scr_sa_region_refused;
 static _Atomic(uint32_t) scr_sa_claimed;              /* one bit per arena */
 static ScrSaState scr_sa_parked[SCR_SA_ARENAS];         /* unowned arenas */
@@ -777,17 +815,34 @@ static bool scr_sa_reserve_region(void) {
   pthread_mutex_lock(&scr_sa_region_lock);
   if (!atomic_load_explicit(&scr_sa_region, memory_order_acquire) && !scr_sa_region_refused) {
     /* Same per-class slice ladder as the single-threaded reservation, for
-     * every arena at once; hosts that limit address space get smaller
-     * slices (each slice that fills falls back to the system). */
-    for (unsigned shift = 30; shift >= 22; shift -= 2) {
-      size_t arena = (size_t)SCR_SA_NCLASS << shift;
-      size_t span = arena * SCR_SA_ARENAS;
-      void *p = scr_sa_map(span);
-      if (!p) continue;
-      scr_sa_arena_span = arena;
-      scr_sa_region_shift = shift;
-      atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
-      break;
+     * every arena at once. A host that limits address space (valgrind maps
+     * at most 56 GiB) gets fewer arenas before smaller slices, down to
+     * SCR_SA_MIN_ARENAS, and fewer still only when no slice size fits that
+     * many. A slice that fills falls back to the system, so with smaller
+     * slices a program that keeps many objects of one class makes system
+     * allocations that a run with full slices does not, and a profile taken
+     * under the limit counts them. At least SCR_SA_MIN_ARENAS arenas are
+     * kept because threads claim them in the order they first allocate:
+     * the main thread keeps its arena, and a thread that starts later reuses
+     * one that another thread parked. Threads beyond the arenas reserved use
+     * the system allocator. */
+    for (unsigned least = SCR_SA_MIN_ARENAS; least >= 1 && !scr_sa_region_arenas; least /= 2) {
+      for (unsigned shift = 30; shift >= 22 && !scr_sa_region_arenas; shift -= 2) {
+        for (unsigned arenas = least == SCR_SA_MIN_ARENAS ? SCR_SA_ARENAS : least; arenas >= least;
+             arenas /= 2) {
+          size_t arena = (size_t)SCR_SA_NCLASS << shift;
+          void *p = scr_sa_map(arena * arenas);
+          if (!p) continue;
+          scr_sa_arena_span = arena;
+          scr_sa_region_shift = shift;
+          scr_sa_region_arenas = arenas;
+          /* The arenas that were not reserved stay claimed. */
+          if (arenas < SCR_SA_ARENAS)
+            atomic_fetch_or_explicit(&scr_sa_claimed, ~((1u << arenas) - 1u), memory_order_relaxed);
+          atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
+          break;
+        }
+      }
     }
     if (!atomic_load_explicit(&scr_sa_region, memory_order_relaxed)) scr_sa_region_refused = true;
   }
@@ -1707,7 +1762,7 @@ static void scr_sa_park_arena(void) {
 static size_t scr_sa_foreign_size(const void *p) {
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (!region || off >= scr_sa_arena_span * SCR_SA_ARENAS) return 0;
+  if (!region || off >= scr_sa_arena_span * scr_sa_region_arenas) return 0;
   return scr_sa_class_size((unsigned)((off % scr_sa_arena_span) >> scr_sa_region_shift));
 }
 
@@ -1717,7 +1772,7 @@ void scr_sa_free_foreign(void *p) {
 #endif
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (region && off < scr_sa_arena_span * SCR_SA_ARENAS) {
+  if (region && off < scr_sa_arena_span * scr_sa_region_arenas) {
     unsigned i = (unsigned)(off / scr_sa_arena_span);
     ScrSaBlock *b = p;
     ScrSaBlock *head = atomic_load_explicit(&scr_sa_remote[i], memory_order_relaxed);
@@ -2114,6 +2169,99 @@ void scr_heap_stats(double *total, double *used) {
 #endif
   *total = (double)(held + sys_held);
   *used = (double)(held - (idle < held ? idle : held) + sys_used);
+}
+
+/* scr_heap_trim: returns the heap pages that hold only freed memory to the
+ * system after a phase's data died (scr_collect_cycles_phase). The
+ * size-class slices keep freed blocks on their class's free list, which only
+ * later blocks of the same class reuse, so a program whose next phase
+ * allocates other sizes would otherwise grow its resident memory on top of
+ * the freed heap. */
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+#include <malloc.h>
+#endif
+#if SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* Returns the pages of class c's slice below its frontier that hold only
+ * free blocks (MADV_DONTNEED), and relinks the class's other free blocks in
+ * address order. A block wholly inside a returned page leaves the free list:
+ * the class carves new blocks past its frontier instead, and the slice's
+ * reservation is far larger than what a program fills. */
+static void scr_sa_return_free_pages(unsigned c, size_t page) {
+  size_t sz = scr_sa_class_size(c);
+  char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+  char *top = scr_sa.bump[c];
+  size_t nblocks = (size_t)(top - start) / sz;
+  if (!nblocks || !scr_sa.free[c]) return;
+  size_t words = (nblocks + 63) / 64;
+  uint64_t *bits = mmap(NULL, words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (bits == MAP_FAILED) return;
+  for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) {
+    size_t k = (size_t)((char *)b - start) / sz;
+    bits[k / 64] |= (uint64_t)1 << (k % 64);
+  }
+#define SCR_SA_FREE_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
+  /* Mark the returned pages' blocks by clearing their bits after the
+   * madvise; a page is returned when every block overlapping it is free. */
+  uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
+  uintptr_t last = (uintptr_t)top & ~(uintptr_t)(page - 1);
+  char *run = NULL;
+  for (uintptr_t pg = first; pg <= last; pg += page) {
+    bool empty = false;
+    if (pg < last) {
+      size_t k0 = (size_t)((char *)pg - start) / sz;
+      size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
+      if (k1 >= nblocks) k1 = nblocks - 1;
+      empty = true;
+      for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_FREE_BIT(k);
+    }
+    if (empty && !run) run = (char *)pg;
+    if (!empty && run) {
+      (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
+      /* Blocks wholly inside the returned pages are dropped. */
+      size_t k0 = ((size_t)(run - start) + sz - 1) / sz;
+      size_t k1 = (size_t)((char *)pg - start) / sz;
+      for (size_t k = k0; k < k1 && (char *)start + (k + 1) * sz <= (char *)pg; k++)
+        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
+      run = NULL;
+    }
+  }
+  /* The kept free blocks, in address order. */
+  ScrSaBlock *head = NULL, **tail = &head;
+  for (size_t w = 0; w < words; w++)
+    for (uint64_t m = bits[w]; m; m &= m - 1) {
+      ScrSaBlock *b = (ScrSaBlock *)(start + (w * 64 + (size_t)__builtin_ctzll(m)) * sz);
+      *tail = b;
+      tail = &b->next;
+    }
+  *tail = NULL;
+  scr_sa.free[c] = head;
+#undef SCR_SA_FREE_BIT
+  (void)munmap(bits, words * 8);
+}
+#endif
+
+void scr_heap_trim(void) {
+#ifdef SCR_SA_TRIM
+  /* A worker runtime returns the calling thread's arena pages as a parking
+   * thread does; the arena stays the thread's own. */
+  if (scr_sa_arena >= 0 && scr_sa_trim_worth()) {
+    scr_sa_trim();
+    return;
+  }
+#elif SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+  if (scr_sa.span) {
+    long page = sysconf(_SC_PAGESIZE);
+    for (unsigned c = 0; c < SCR_SA_NCLASS; c++)
+      if (scr_sa.lim[c]) scr_sa_return_free_pages(c, page > 0 ? (size_t)page : 4096);
+  }
+#endif
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+  /* Large blocks: the system allocator's free pages too. */
+  (void)malloc_trim(0);
+#endif
 }
 
 /* ── program-lifetime region ────────────────────────────────────────────

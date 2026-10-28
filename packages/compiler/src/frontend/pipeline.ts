@@ -1,3 +1,4 @@
+import { shapeOverlayReport } from "./shape-inference/index.js";
 /** Shared frontend orchestration. Hosts supply a program loader so Node
  * and native callers use the same npm selection, preflight and lowering. */
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -44,9 +45,11 @@ import {
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
+import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
   scanFiles,
@@ -276,7 +279,12 @@ function detectAutoPackages(
       // declarations only, and @scriptc/threads and @scriptc/experimental
       // exports lower at their use sites (threads-import.ts,
       // experimental-import.ts), typed by their declarations.
-      if (spec === CONTRACT_TYPES_MODULE || spec === THREADS_MODULE || spec === EXPERIMENTAL_MODULE)
+      if (
+        spec === CONTRACT_TYPES_MODULE ||
+        spec === THREADS_MODULE ||
+        spec === EXPERIMENTAL_MODULE ||
+        spec === NODE_API_MODULE
+      )
         continue;
       // Attested entries already resolve to program sources, so the
       // published package's declaration eligibility does not apply.
@@ -735,10 +743,14 @@ function loadFrontend(
   const projectConfig = readProjectConfig(entryPath);
   const configDiagnostics = projectConfig.diagnostics;
   const report = options.nodeIslands === true;
+  // Type patches that did not apply as written (SC8030–SC8033) warn; the
+  // build goes on with the packages' own declarations there.
+  const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
+  const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
   return {
     preflight:
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
-    ...(!report && configDiagnostics.length > 0 ? { warnings: configDiagnostics } : {}),
+    ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: () => entryFunctionExports(finalLoad.entry),
     // The contract scans the PROGRAM's source files, not the runtime
@@ -773,9 +785,10 @@ function loadFrontend(
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
         ].map((sf) => [sf.fileName, sf.text]),
       );
-      // SC8004 diagnostics point into the project's package.json.
+      // SC8004 and type patch diagnostics point into the project's
+      // package.json.
       if (
-        configDiagnostics.length > 0 &&
+        (configDiagnostics.length > 0 || patchDiagnostics.length > 0) &&
         projectConfig.manifest !== null &&
         projectConfig.manifestText !== null
       )
@@ -795,8 +808,11 @@ function loadFrontend(
       });
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
-      const notes = finalLoad.declBoundaryNotes;
-      if (notes === undefined) return lowered;
+      const notes = [
+        ...(finalLoad.declBoundaryNotes ?? []),
+        ...shapeOverlayReport(finalLoad.entry.fileName),
+      ];
+      if (notes.length === 0) return lowered;
       return { ...lowered, performance: [...notes, ...(lowered.performance ?? [])] };
     },
     npmStatic: statuses,

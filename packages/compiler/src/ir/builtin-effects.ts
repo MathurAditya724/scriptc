@@ -8,6 +8,8 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
  * failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // The copied error of a synchronous call into Node (@scriptc/node).
+  "nodeIsland.callSync",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.
@@ -92,6 +94,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
   "stream.unboxDyn",
   "stream.dynIterableSource",
+  "stream.dynSourceValue",
+  "stream.unboxDynStage",
+  "stream.dynTransformResult",
   "stream.handleStream",
   "stream.pipeDyn",
   "stream.unpipeDyn",
@@ -148,8 +153,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.headersNew",
   "fetch.responseNew",
   "fetch.responseJsonStatic",
-  "fetch.abortTimeout",
-  "fetch.abortAny",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -185,6 +188,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // The runtime formatter calls toString, valueOf and toJSON, and refuses
+  // renderings it has no lowering for.
+  "insp.format",
+  "insp.formatList",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  // The options object reads the caller's options (getters included), and
+  // the checked-dynamic walk calls custom inspect functions.
+  "insp.customOptions",
+  "insp.customResult",
   // A checked-dynamic value the inspector does not render (a promise, a
   // URL, a RegExp) throws the 'not supported yet' Error.
   "insp.dyn",
@@ -485,6 +498,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
+  "error.captureStackTrace",
   "error.ctorOptions",
   "error.newAggregate",
   "error.newSuppressed",
@@ -599,6 +613,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.inherits",
   "util.inheritsPrototype",
   "util.deprecate",
+  "util.extend",
+  "util.signalExitCode",
+  "util.diff",
+  "util.debounce",
+  "util.throttle",
+  "mime.typeNew",
+  "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
   "util.debuglog",
@@ -657,9 +678,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
-  // Error.captureStackTrace: Node's TypeError for a primitive target, and
-  // the error string conversion of name and message
-  "dyn.errorCaptureStackTrace",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -686,6 +704,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.builtinId",
   "process.builtinModule",
   "process.builtinUnsupported",
+  "module.requireComputed",
+  "module.resolveComputed",
   "fs.callbackValue",
   "fs.callbackCall",
   "dyn.keyDelete",
@@ -743,6 +763,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.rmSync",
   "fs.rmdirSync",
   "fs.readdirSync",
+  "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
   "fs.globSync",
   "fs.globTypesSync",
@@ -880,6 +901,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.setAutoSelTimeout",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "emitter.setMaxChk",
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
@@ -920,6 +942,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
+  "net.connectPath",
+  "net.connectPathCb",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.
@@ -1081,6 +1105,7 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "fs.mkdtempChk",
   "fs.readFileChk",
   "fs.opendirChk",

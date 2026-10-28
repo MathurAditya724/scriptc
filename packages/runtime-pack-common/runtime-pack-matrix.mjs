@@ -47,11 +47,16 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
   "scr_alloc.c",
   // crypto.getCipherInfo's table; it links only into programs that call it.
   "scr_cipher_info.c",
+  // Math's transcendental functions as V8 computes them, and on glibc the
+  // exact libm functions that let a program link without libm.so.
+  "scr_ieee754.c",
+  "scr_glibc_math.c",
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
@@ -68,12 +73,14 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // createRequire's computed require and require.resolve.
+  ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
   // The dynamic tier's jsval values (two-tier design I3): linked only into
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch")],
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
@@ -93,6 +100,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_events_emitter.c", "emitter"],
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
+  ["scr_mime.c", "mime"],
+  // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
+  ["scr_text_pages.c", "largePages"],
+  ["scr_webstreams.c", "webStreams"],
+  ["scr_dyn_handle_class.c", "webStreams"],
+  ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   ["scr_symbol.c", "symbol"],
   ["scr_bigint_assert.c", all("assert", "bigint")],
@@ -134,6 +147,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Own properties JavaScript adds to children.
   ["scr_dyn_handle_props.c", "handleProps"],
   ["scr_decl_adopt.c", "declAdopt"],
+  ["scr_type_origin.c", "typeOrigins"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
   ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
@@ -172,17 +186,32 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_tls_x509.c", all("tlsEffective", "x509")],
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
+  ["scr_abort.c", "abortSignalOnly"],
   ["scr_fetch.c", "nativeFetch"],
+  // Node islands: libnode loaded on first use (explicit @scriptc/node calls),
+  // over the SCR_NODE_ISLANDS build of scr_async.c.
+  ["scr_node_island.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
-  // Programs with dynamic-tier code keep the tier's hidden classes current
-  // in checked objects (two-tier design S4); every other program links the
-  // ordinary object, byte for byte.
+  // Programs with dynamic-tier code link the build that exports the
+  // primitives the tier's inline caches use (two-tier design S4); every
+  // other program links the ordinary object, byte for byte.
   if (source === "scr_json.c") {
     variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
+    // Programs with web streams: instanceof over their classes' handles.
+    variants.push({
+      id: "handle-classes",
+      when: { webStreams: true },
+      defines: ["SCR_HANDLE_CLASSES"],
+    });
+    variants.push({
+      id: "dyn-tier-handle-classes",
+      when: { dynTier: true, webStreams: true },
+      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES"],
+    });
   }
   if (source === "scr_bytes.c") {
     variants.push({
@@ -200,12 +229,39 @@ export function variantsFor(source) {
       defines: ["SCR_WARNING_REPLACE"],
     });
   }
+  // Programs with web streams link the promise unit with native promise
+  // reactions, the builtin-class unit whose instanceof knows their classes
+  // (as scr_json.c's does above), and the fetch unit that takes their
+  // streams as bodies; every other program keeps the default objects.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "native-reactions",
+      when: { webStreams: true },
+      defines: ["SCR_NATIVE_REACTIONS"],
+    });
+  }
+  if (source === "scr_dyn_builtin_class.c" || source === "scr_fetch.c") {
+    variants.push({
+      id: "handle-classes",
+      when: { webStreams: true },
+      defines: ["SCR_HANDLE_CLASSES"],
+    });
+  }
   // stdin setEncoding, string data listeners and stdio 'resize' events.
   if (source === "scr_events.c") {
     variants.push({
       id: "stdio-extended",
       when: { stdioExtended: true },
       defines: ["SCR_STDIO_EXTENDED"],
+    });
+  }
+  // Programs with Node islands link the event loop with the Node island slot;
+  // every other program keeps the default object, byte for byte.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
   }
   if (source === "scr_cycle.c") {

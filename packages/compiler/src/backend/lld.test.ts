@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { driverFindsLld, lldLinkerArgs } from "./lld.js";
+import { driverFindsLld, inputsWithoutLld, lldLinkerArgs } from "./lld.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -59,3 +59,10 @@ test.skipIf(process.platform === "win32")(
     expect(lldLinkerArgs("linux", clang, { ...env, SCRIPTC_LINKER: clang })).toEqual([]);
   },
 );
+
+test("Linux links without lld leave out the glibc math unit", () => {
+  const inputs = ["/pack/scr_lib.o", "/pack/scr_glibc_math.o", "/tmp/program.o"];
+  expect(inputsWithoutLld("linux", inputs)).toEqual(["/pack/scr_lib.o", "/tmp/program.o"]);
+  expect(inputsWithoutLld("darwin", inputs)).toEqual(inputs);
+  expect(inputsWithoutLld("windows", inputs)).toEqual(inputs);
+});

@@ -12,13 +12,14 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
-import { type TargetCpu, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -53,6 +54,8 @@ export interface EarlyExecutableNativeFeatures {
   optimization?: "dev" | "speed";
   workers?: boolean;
   youngNursery?: boolean;
+  /** `--large-pages` links scr_text_pages.c. */
+  largePages?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -62,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
+  nodeIsland?: boolean;
   moduleNamespace?: boolean;
   zlib: boolean;
   brotli?: boolean;
@@ -74,10 +78,16 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   declAdopt?: boolean;
+  typeOrigins?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
+  mime?: boolean;
+  webStreams?: boolean;
+  abortSignal?: boolean;
+  utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
@@ -125,6 +135,11 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** Programs that call into Node.js: the libnode pack identity the build
+   * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
+  libnode?: string;
+  /** How a --profile-use build's profile matched, which a cache hit reports. */
+  profileMatch?: NativeProfileMatch;
   integrity: string;
 }
 
@@ -139,21 +154,40 @@ export interface EarlyExecutableCacheOptions {
   optimization?: "dev" | "speed";
   /** Omitted retains the unstripped executable's historical cache key. */
   strip?: true;
+  /** Omitted unless --static is set. */
+  staticLink?: true;
   /** Omitted for the default Windows console subsystem. */
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** The identity of the libnode pack a program that calls into Node.js
+   * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
+   * build names none. Not part of the key: an entry of a program that calls
+   * into Node records it, and a hit requires the same identity, so the pack
+   * settings never change the key of a program that does not. */
+  libnodeIdentity?: () => string | undefined;
+  /** Omitted unless --large-pages is set. */
+  largePages?: true;
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
   targetCpu?: TargetCpu;
+  /** Omitted for builds without runtime CPU dispatch. */
+  cpuDispatch?: true;
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
+  /** Omitted without a function layout; otherwise the digest of its bytes. */
+  functionLayout?: string;
   /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
    * tsc-ts executable's file identity. */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
+  heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted unless shape inference's overlay compiles the packages
+   * (frontend/shape-inference). */
+  shapeOverlay?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -207,10 +241,21 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** How a --profile-use build's profile matched, reported again on a hit. */
+  profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+}
+
+function isProfileMatch(value: unknown): value is NativeProfileMatch {
+  if (typeof value !== "object" || value === null) return false;
+  const match = value as Record<string, unknown>;
+  return ["annotated", "mismatched", "missing", "unknownPartitions"].every((key) => {
+    const count = match[key];
+    return typeof count === "number" && Number.isInteger(count) && count >= 0;
+  });
 }
 
 const BOOLEAN_NATIVE_KEYS = [
@@ -286,12 +331,17 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.backend,
     ...optimizationKeyParts(options.optimization),
     ...(options.strip ? ["strip"] : []),
+    ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.largePages ? ["large-pages"] : []),
     ...targetCpuKeyParts(options.targetCpu),
+    ...cpuDispatchKeyParts(options.cpuDispatch),
     ...(options.profile !== undefined ? [options.profile] : []),
+    ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.heapCensus ? ["heap-census"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -329,12 +379,17 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     .update("\0");
   for (const part of optimizationKeyParts(options.optimization)) hash.update(`${part}\0`);
   if (options.strip) hash.update("strip\0");
+  if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.largePages) hash.update("large-pages\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
+  for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
+  if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.heapCensus) hash.update("heap-census\0");
   hash
     .update(
       options.npmStatic === null
@@ -538,6 +593,8 @@ async function readExecutableCache(
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
+      (stamp.native.nodeIsland === true &&
+        (stamp.libnode ?? "") !== (options.libnodeIdentity?.() ?? "")) ||
       !frontendInputsStillMatch(
         validateRoute === undefined ? stamp.frontend : routedFrontendCandidate(stamp.frontend),
         executableFrontendOutputExclusions(options, stamp.native.backend),
@@ -663,6 +720,7 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
       ...(irSourcePath === undefined ? {} : { irSourcePath }),
@@ -853,6 +911,8 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
+      ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };
     const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
     await writeFile(join(stage, "stamp.json"), `${JSON.stringify(stamp)}\n`, { mode: 0o600 });

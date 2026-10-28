@@ -127,6 +127,12 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
   if (mod.declBoundary !== undefined && mod.declBoundary !== true)
     errors.push({ message: "declBoundary must be true when present", loc: moduleLoc });
+  const declOrigins = mod.declOrigins;
+  if (
+    declOrigins !== undefined &&
+    (!Array.isArray(declOrigins) || declOrigins.some((o) => typeof o !== "string"))
+  )
+    errors.push({ message: "declOrigins must be an array of strings", loc: moduleLoc });
   if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
     errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
@@ -1001,6 +1007,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       mod.workers === true,
       mod.lifetimeRegions === true,
       new Set(mod.threadSlotKeys ?? []),
+      mod.declOrigins?.length ?? 0,
     );
   }
   return errors;
@@ -1020,6 +1027,7 @@ function validateFunction(
   workers: boolean,
   lifetimeRegions: boolean,
   threadSlotKeys: ReadonlySet<string>,
+  declOriginCount: number,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
@@ -3018,6 +3026,18 @@ function validateFunction(
           }
           break;
         }
+        // An instance of a class declared `extends Array` and its array
+        // are the same object: upcast to the array, downcast back.
+        {
+          const instance = e.kind === "upcast" ? e.value.type : e.type;
+          const array = e.kind === "upcast" ? e.type : e.value.type;
+          if (instance.kind === "object" && array.kind === "array") {
+            const elem = classes.get(instance.className)?.arrayElem;
+            if (elem === undefined || !typeEquals(elem, array.elem))
+              err(`${e.kind}: "${instance.className}" is not an array of that element type`, e.loc);
+            break;
+          }
+        }
         if (e.type.kind !== "object" || e.value.type.kind !== "object") {
           err(`${e.kind} between non-class types`, e.loc);
           break;
@@ -3125,6 +3145,15 @@ function validateFunction(
       case "instanceOf": {
         checkExpr(e.value);
         if (e.type.kind !== "bool") err("instanceOf must be bool", e.loc);
+        // An array against a class declared `extends Array` (its ext).
+        if (e.value.type.kind === "array") {
+          if (classes.get(e.className)?.arrayElem === undefined)
+            err(
+              `instanceOf of an array against "${e.className}", which does not extend Array`,
+              e.loc,
+            );
+          break;
+        }
         if (!hierarchy.has(e.className)) {
           err(`instanceOf against non-hierarchy class "${e.className}"`, e.loc);
         }
@@ -4215,6 +4244,41 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // ArraySpeciesCreate over an Array method's result, and Array.of /
+    // Array.from on a class that extends Array: the result has the plain
+    // result's array type.
+    if (e.fn === "array.dynIsClass") {
+      const cls = e.args[1]?.kind === "strLit" ? classes.get(e.args[1].value) : undefined;
+      if (cls?.arrayElem === undefined)
+        err("libCall array.dynIsClass must name a class that extends Array", e.loc);
+      return false;
+    }
+    if (e.fn === "array.speciesCreate") {
+      if (e.args[0]?.type.kind !== "array" || !typeEquals(e.type, e.args[0].type))
+        err("libCall array.speciesCreate must have its receiver's array type", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesFinish") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err("libCall array.speciesFinish must have its array argument's type", e.loc);
+      if (e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesFinish instance must be an array", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesAdopt" || e.fn === "array.classConstructAdopt") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err(`libCall ${e.fn} must have its array argument's type`, e.loc);
+      if (e.fn === "array.speciesAdopt" && e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesAdopt receiver must be an array", e.loc);
+      if (e.fn === "array.classConstructAdopt") {
+        const cls = e.args[0]?.kind === "strLit" ? classes.get(e.args[0].value) : undefined;
+        if (cls?.arrayElem === undefined)
+          err("libCall array.classConstructAdopt must name a class that extends Array", e.loc);
+      }
+      return true;
+    }
     const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
     if (cryptoPromise) {
       const inner = e.type.kind === "promise" ? e.type.inner : undefined;
@@ -4313,7 +4377,9 @@ function validateFunction(
     if (
       e.fn === "array.namedKeys" ||
       e.fn === "array.hasNamedKey" ||
-      e.fn === "array.hasProperties"
+      e.fn === "array.hasProperties" ||
+      e.fn === "array.foreign" ||
+      e.fn === "array.foreignThrow"
     ) {
       if (e.args[0]?.type.kind !== "array") {
         err(`libCall ${e.fn} arg 0: expected an array, got ${e.args[0]?.type.kind}`, e.loc);
@@ -5759,7 +5825,7 @@ function validateFunction(
         }
         const lastIsFunction = Math.floor(positions! / 2 ** (total - 1)) % 2 === 1;
         const helperCount = 3 * pipelinePumpedRuns(total, positions!, flags!);
-        const groups = helperCount + (destKind === 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const groups = helperCount + (destKind >= 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
         const cbArgs =
           e.fn === "sp.pipelineStagesOpts"
             ? 1 + (flags! & 64 ? 1 : 0)
@@ -5774,7 +5840,7 @@ function validateFunction(
           total > 52 ||
           positions! >= 2 ** total ||
           functions !== k ||
-          destKind === 3 ||
+          (destKind === 3 && e.fn === "stream.composeStages") ||
           (destKind !== 0) !== lastIsFunction ||
           total < 2 ||
           e.args.length !== 5 + n! + k! + groups + cbArgs
@@ -5793,7 +5859,7 @@ function validateFunction(
             err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
         }
         at2 += k!;
-        const helpers = helperCount + (destKind === 2 ? 1 : 0);
+        const helpers = helperCount + (destKind >= 2 ? 1 : 0);
         for (let i = at2; i < at2 + helpers; i++) {
           if (e.args[i]?.type.kind !== "func")
             err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
@@ -6152,6 +6218,11 @@ function validateFunction(
       case "dynCheck": {
         checkExpr(e.value);
         expectType(e.value, DYN, "dynCheck operand");
+        if (
+          e.origin !== undefined &&
+          (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
+        )
+          err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).

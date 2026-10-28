@@ -4,13 +4,12 @@
  * A property site in a dynamic-tier function owns one zeroed thread-local
  * ScrJsIc record (`@sc_js_ic_N`). The code at the site is fixed:
  *
- *   load   ordinary object whose shape is entry 0's own-property shape:
- *          read entry `slot` inline unless it is an accessor; otherwise
- *          scr_js_get_probe (polymorphic, prototype hits, absent keys,
- *          misses)
- *   store  ordinary object whose shape is entry 0's replace shape, outside
- *          an intact parse region, writable data entry: replace inline;
- *          otherwise scr_js_store_probe (adds, polymorphic, misses)
+ *   load   ordinary object whose layout is entry 0's own-property layout:
+ *          read slot `slot` inline; otherwise scr_js_get_probe
+ *          (polymorphic, prototype hits, absent keys, misses)
+ *   store  ordinary object whose layout is entry 0's replace layout,
+ *          outside an intact parse region: replace inline; otherwise
+ *          scr_js_store_probe (adds, polymorphic, misses)
  *   keyed  dense array element at an integral number key: inline;
  *          otherwise scr_js_keyed_probe (string keys of ordinary objects)
  *   method dynInvoke's method read: scr_js_load_probe
@@ -22,16 +21,19 @@
  * defines the operation's semantics; nothing is ever patched.
  *
  * Layout facts (64-bit only; 32-bit targets keep the helper calls):
- *   ScrDyn       kind +8; v.obj {len +16, entries +32, region +72,
- *                shape +80}; v.arr {len +16, items +32, presence +56};
- *                v.num +16
- *   ScrDynEntry  48 bytes: value +16, accessor bit 0 of +40, writable +41
- *   ScrJsIc      entries of 40 bytes {shape, target, holder, holder_shape,
- *                slot}; 168 bytes in all */
-import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction } from "../../ir/ir.js";
+ *   ScrDyn       kind +8; v.obj {len +16, slots +32, region +72,
+ *                layout +80}; v.arr {len +16, items +32, presence +56};
+ *                v.num +16. Every property of an object with a layout is
+ *                a writable data property (scr_dyn.h's layout mode);
+ *                dictionary-mode objects have a null layout.
+ *                v.typed_ref {ptr +16, type_key +40}.
+ *   ScrJsIc      entries of 40 bytes {layout, target, holder,
+ *                holder_layout, slot}; 168 bytes in all */
+import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { classFieldBase, classFieldIndex } from "./classes.js";
 import { DYN_KIND } from "./dyn.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -41,8 +43,6 @@ type Host = LlvmEmitterContext;
 
 /** Words of one ScrJsIc record. */
 export const JS_IC_WORDS = 21;
-
-const ENTRY_STRIDE = 48;
 
 /** The cache site a call is, when it is emitted in a dynamic-tier function
  * of a 64-bit target. */
@@ -86,34 +86,22 @@ function kindIs(host: Host, d: string, kind: number, yes: string, no: string): v
  * inline made polymorphic reads 7-10% faster (the design prototype's W2/W3)
  * and monomorphic method code no faster, for 65-225 more bytes per site;
  * the prototype hit made method-heavy code 3-6% faster for 15-90 bytes.
- * So a site tests entry 0, own or prototype, and its probe does the rest.
- * (0 makes every access probe: with a runtime built with SCR_JS_VERIFY,
- * that checks every cached shape against its object.) */
-const INLINE_WAYS: number = 1;
+ * Two entries cover the common two-layout site (object literals of one
+ * record built in two key orders): on bench:runtime's dynamic-properties
+ * they made the run 13% faster than one entry, and 26% faster without its
+ * class instances; four were no faster than two. So a site tests entries
+ * 0 and 1, own or prototype, and its probe does the rest. (0 makes every access probe: with a runtime
+ * built with SCR_JS_VERIFY, that probes every access.) */
+const INLINE_WAYS: number = 2;
 const INLINE_PROTO = true;
 
-/** The address of entry `slot` of object `d`'s entries. */
-function entryAt(host: Host, d: string, slot: string): string {
+/** The address of slot `slot` of layout-mode object `d`. */
+function slotAt(host: Host, d: string, slot: string): string {
   const B = host.B;
-  const entries = load(host, "ptr", d, 32);
-  const offset = B.tmp();
-  const entry = B.tmp();
-  B.line(`${offset} = mul i64 ${slot}, ${ENTRY_STRIDE}`);
-  B.line(`${entry} = getelementptr inbounds i8, ptr ${entries}, i64 ${offset}`);
-  return entry;
-}
-
-/** Branches to `miss` when the entry at `entry` is an accessor. */
-function dataEntry(host: Host, entry: string, miss: string): void {
-  const B = host.B;
-  const flags = load(host, "i8", entry, 40);
-  const accessor = B.tmp();
-  const isAccessor = B.tmp();
-  B.line(`${accessor} = and i8 ${flags}, 1`);
-  B.line(`${isAccessor} = icmp ne i8 ${accessor}, 0`);
-  const data = B.newLabel("ic.data");
-  B.condBr(isAccessor, miss, data);
-  B.startBlock(data);
+  const slots = load(host, "ptr", d, 32);
+  const address = B.tmp();
+  B.line(`${address} = getelementptr inbounds ptr, ptr ${slots}, i64 ${slot}`);
+  return address;
 }
 
 /** The inline part of a load site, entered for an ordinary object `d`:
@@ -137,7 +125,7 @@ function inlineLoad(
     B.br(miss);
     return;
   }
-  const shape = load(host, "ptr", d, 80);
+  const shape = load(host, "ptr", d, 80); // v.obj.layout
   const present = B.tmp();
   B.line(`${present} = icmp ne ptr ${shape}, null`);
   let next = B.newLabel("ic.w");
@@ -160,9 +148,7 @@ function inlineLoad(
     B.condBr(own, ownLabel, protoLabel);
     const hit = (holder: string): void => {
       const slot = load(host, "i64", ic, base + 32);
-      const entry = entryAt(host, holder, slot);
-      dataEntry(host, entry, miss);
-      const value = load(host, "ptr", entry, 16);
+      const value = load(host, "ptr", slotAt(host, holder, slot), 0);
       const out = result(value);
       incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
       B.br(join);
@@ -194,7 +180,7 @@ function inlineLoad(
 /** The inline part of a store site that replaces an own data property,
  * entered for an ordinary object `d` outside an intact parse region:
  * tests the first `ways` cache entries; a hit calls `store` with the
- * address of the entry's value word, which must end its block by
+ * address of the property's slot, which must end its block by
  * branching to the site's join. */
 function inlineReplace(
   host: Host,
@@ -209,7 +195,7 @@ function inlineReplace(
     B.br(miss);
     return;
   }
-  const shape = load(host, "ptr", d, 80);
+  const shape = load(host, "ptr", d, 80); // v.obj.layout
   const present = B.tmp();
   B.line(`${present} = icmp ne ptr ${shape}, null`);
   let next = B.newLabel("ic.w");
@@ -230,21 +216,7 @@ function inlineReplace(
     B.condBr(ok, matched, next);
     B.startBlock(matched);
     const slot = load(host, "i64", ic, base + 32);
-    const entry = entryAt(host, d, slot);
-    const flags = load(host, "i8", entry, 40);
-    const writable = load(host, "i8", entry, 41);
-    const accessor = B.tmp();
-    const data = B.tmp();
-    const canWrite = B.tmp();
-    const writes = B.tmp();
-    B.line(`${accessor} = and i8 ${flags}, 1`);
-    B.line(`${data} = icmp eq i8 ${accessor}, 0`);
-    B.line(`${canWrite} = icmp ne i8 ${writable}, 0`);
-    B.line(`${writes} = and i1 ${data}, ${canWrite}`);
-    const hit = B.newLabel("ic.st");
-    B.condBr(writes, hit, miss);
-    B.startBlock(hit);
-    store(gep(host, entry, 16));
+    store(slotAt(host, d, slot));
   }
 }
 
@@ -347,6 +319,222 @@ function keyString(host: Host, key: string, e: IrExpr): string {
   return host.emitExpr({ kind: "strLit", value: key, type: STRING, loc: e.loc }).name;
 }
 
+/** A class instance's answer that a read helper gives by loading one
+ * declared field: the branch `if (dyn.typedRefIs(p, KEY)) { r =
+ * dynCheck(p); return [js.fromDyn](fieldGet C.f(r)) }`. */
+interface CapsuleRead {
+  key: string;
+  className: string;
+  field: string;
+}
+
+/** The class branches of a read helper that a site can answer inline for
+ * capsules (class instances boxed as dyn values), or none.
+ *
+ * The helper first normalizes its receiver (`%dyn.class.normalize`
+ * reboxes a capsule keyed with a base class whose instance belongs to a
+ * subclass), then tests each class branch in turn. The site loads the
+ * field of a capsule whose key is a branch's key without normalizing, so
+ * a branch qualifies only when every subclass the normalization can
+ * rebox its key to has a branch that loads the same field from the same
+ * slot of a layout that extends the class's. Every other capsule, and
+ * every helper or normalization of another form, keeps the helper. */
+function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
+  const receiver = helper.params[0]?.localId;
+  if (receiver === undefined || helper.params.length !== 1) return [];
+  const reads = new Map<string, CapsuleRead | null>();
+  for (const stmt of helper.body) {
+    if (normalizes(stmt, receiver)) continue;
+    if (stmt.kind !== "if" || stmt.else_ !== null) break;
+    if (notCapsule(stmt.cond, receiver)) continue;
+    const key = brandKey(stmt.cond, receiver);
+    if (key === null) return [];
+    if (!reads.has(key)) reads.set(key, capsuleRead(stmt, receiver, key));
+  }
+  const reboxes = normalizationTargets(host);
+  if (reboxes === null) return [];
+  const out: CapsuleRead[] = [];
+  for (const read of reads.values()) {
+    if (read === null || !plainField(host, read.className, read.field)) continue;
+    const targets = reboxes.get(read.key) ?? [];
+    const same = targets.every((target) => {
+      const other = reads.get(`object:${target}`);
+      return (
+        other != null &&
+        other.field === read.field &&
+        plainField(host, target, read.field) &&
+        extendsLayout(host, target, read.className, read.field)
+      );
+    });
+    if (same) out.push(read);
+  }
+  return out;
+}
+
+/** `p = %dyn.class.normalize(p)`. */
+function normalizes(stmt: IrStmt, receiver: string): boolean {
+  return (
+    stmt.kind === "assign" &&
+    stmt.localId === receiver &&
+    stmt.value.kind === "call" &&
+    stmt.value.callee === "%dyn.class.normalize" &&
+    stmt.value.args.length === 1 &&
+    isLocal(stmt.value.args[0]!, receiver)
+  );
+}
+
+/** `!classCapsule(p)`: false for every capsule of a compiled class, so a
+ * capsule never enters the branch it guards. */
+function notCapsule(cond: IrExpr, receiver: string): boolean {
+  return (
+    cond.kind === "dynTest" &&
+    cond.test === "classCapsule" &&
+    cond.negated === true &&
+    isLocal(cond.value, receiver)
+  );
+}
+
+function isLocal(e: IrExpr, id: string): boolean {
+  return e.kind === "varRef" && e.localId === id;
+}
+
+/** The capsule key `dyn.typedRefIs(p, "object:C")` tests, or null. */
+function brandKey(cond: IrExpr, receiver: string): string | null {
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (!isLocal(value!, receiver) || key?.kind !== "strLit" || !key.value.startsWith("object:"))
+    return null;
+  return key.value;
+}
+
+/** The field a class branch loads, or null for a branch of another form. */
+function capsuleRead(
+  branch: IrStmt & { kind: "if" },
+  receiver: string,
+  key: string,
+): CapsuleRead | null {
+  const [decl, ret] = branch.then;
+  if (branch.then.length !== 2 || decl?.kind !== "varDecl" || ret?.kind !== "return") return null;
+  if (decl.init?.kind !== "dynCheck" || !isLocal(decl.init.value, receiver)) return null;
+  let value = ret.value;
+  if (value?.kind === "libCall" && value.fn === "js.fromDyn" && value.args.length === 1)
+    value = value.args[0]!;
+  if (value?.kind !== "fieldGet" || !isLocal(value.obj, decl.localId)) return null;
+  if (key !== `object:${value.className}`) return null;
+  return { key, className: value.className, field: value.field };
+}
+
+/** For each capsule key `%dyn.class.normalize` reboxes, the classes it
+ * may rebox to; null when the normalization has another form. */
+function normalizationTargets(host: Host): Map<string, string[]> | null {
+  const targets = new Map<string, string[]>();
+  const normalize = host.fnByName.get("%dyn.class.normalize");
+  if (normalize === undefined) return targets;
+  const value = normalize.params[0]?.localId;
+  if (value === undefined) return null;
+  for (const stmt of normalize.body) {
+    if (stmt.kind === "return") {
+      if (stmt.value !== null && isLocal(stmt.value, value)) continue;
+      return null;
+    }
+    if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+    if (notCapsule(stmt.cond, value)) continue;
+    const key = brandKey(stmt.cond, value);
+    if (key === null) return null;
+    const [decl, ...checks] = stmt.then;
+    if (decl?.kind !== "varDecl" || decl.init?.kind !== "dynCheck") return null;
+    const into = targets.get(key) ?? [];
+    for (const check of checks) {
+      if (
+        check.kind !== "if" ||
+        check.else_ !== null ||
+        check.cond.kind !== "instanceOf" ||
+        !isLocal(check.cond.value, decl.localId)
+      )
+        return null;
+      into.push(check.cond.className);
+    }
+    targets.set(key, into);
+  }
+  return targets;
+}
+
+/** A declared field of a compiled class that holds a plain dyn cell
+ * pointer: not compact, compressed, int32 or an inline union. */
+function plainField(host: Host, className: string, field: string): boolean {
+  const meta = host.classMeta.get(className);
+  if (meta === undefined || meta.compact) return false;
+  const decl = meta.def.fields.find((f) => f.name === field);
+  if (decl === undefined || decl.type.kind !== "dyn") return false;
+  if (classFieldIndex(meta, field, "compressed").compressed) return false;
+  return (
+    !host.int32Slots.isField(className, field) && !host.inlineUnions.classField(className, field)
+  );
+}
+
+/** Whether `sub`'s layout starts with `base`'s through `field`: the same
+ * header and the same fields in the same slots, so a load through
+ * `base`'s struct reads `sub`'s field. */
+function extendsLayout(host: Host, sub: string, base: string, field: string): boolean {
+  const a = host.classMeta.get(base);
+  const b = host.classMeta.get(sub);
+  if (a === undefined || b === undefined || b.compact) return false;
+  if (classFieldBase(a) !== classFieldBase(b)) return false;
+  const end = a.def.fields.findIndex((f) => f.name === field);
+  if (end < 0 || end >= b.def.fields.length) return false;
+  for (let i = 0; i <= end; i++) {
+    const x = a.def.fields[i]!;
+    const y = b.def.fields[i]!;
+    if (x.name !== y.name || x.type.kind !== y.type.kind) return false;
+  }
+  return (
+    classFieldIndex(a, field, "compressed").index === classFieldIndex(b, field, "compressed").index
+  );
+}
+
+/** The inline part of a read site for a capsule `d`: a capsule whose key
+ * is one of `reads`' keys answers with the (borrowed) field cell, branching
+ * to `join` and recording its phi input; anything else, including a field
+ * not yet set, branches to `miss`. */
+function inlineCapsuleLoad(
+  host: Host,
+  d: string,
+  reads: readonly CapsuleRead[],
+  incoming: string[],
+  join: string,
+  miss: string,
+): void {
+  const B = host.B;
+  const capsule = B.newLabel("icc.cap");
+  kindIs(host, d, DYN_KIND.TYPED_REF, capsule, miss);
+  B.startBlock(capsule);
+  // Capsules boxed by this program share its key constants.
+  const key = load(host, "ptr", d, 40);
+  let next = B.newLabel("icc.k");
+  B.br(next);
+  reads.forEach((read, i) => {
+    B.startBlock(next);
+    next = i + 1 < reads.length ? B.newLabel("icc.k") : miss;
+    const same = B.tmp();
+    B.line(`${same} = icmp eq ptr ${key}, ${host.cstr(read.key)}`);
+    const matched = B.newLabel("icc.m");
+    B.condBr(same, matched, next);
+    B.startBlock(matched);
+    const instance = load(host, "ptr", d, 16);
+    const { ptr } = host.classFieldPtr(instance, read.className, read.field);
+    const cell = B.tmp();
+    B.line(`${cell} = load ptr, ptr ${ptr}`);
+    const set = B.tmp();
+    B.line(`${set} = icmp ne ptr ${cell}, null`);
+    const hit = B.newLabel("icc.hit");
+    B.condBr(set, hit, miss);
+    B.startBlock(hit);
+    incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    B.br(join);
+  });
+}
+
 /** Emits a call to a classified helper as a cache site. */
 export function emitJsIcCall(
   host: Host,
@@ -401,14 +589,24 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   // conversion to the result type.
   const hit = B.newLabel("icg.hit");
   const hits: string[] = [];
-  kindIs(host, receiver.name, DYN_KIND.OBJ, object, probe);
+  const reads = capsuleReads(host, callee);
+  const other = reads.length > 0 ? B.newLabel("icg.other") : probe;
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, other);
   B.startBlock(object);
   inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
+  if (reads.length > 0) {
+    B.startBlock(other);
+    inlineCapsuleLoad(host, receiver.name, reads, hits, hit, probe);
+  }
   B.startBlock(probe);
   // The read's probe also answers keys the receiver's plain chain lacks.
-  host.declare(`declare ptr @scr_js_get_probe(ptr, ptr, ptr)`);
+  // Only `length` and `next` reads can be answered for a native array or
+  // iterator, so only those sites take the probe that tests them.
+  const probeFn =
+    key === "length" || key === "next" ? "scr_js_get_probe_native" : "scr_js_get_probe";
+  host.declare(`declare ptr @${probeFn}(ptr, ptr, ptr)`);
   const probed = B.tmp();
-  B.line(`${probed} = call ptr @scr_js_get_probe(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
+  B.line(`${probed} = call ptr @${probeFn}(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${probed}, null`);
   const probeEnd = B.currentLabel();

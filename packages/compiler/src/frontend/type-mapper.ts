@@ -1,5 +1,6 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
+import type { HeldContents, JournalTable } from "./lowering/unit-journal.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -10,6 +11,7 @@ import {
   isDynTypedRefType,
   BOOL,
   bytesOf,
+  canBoxFuncIntoDyn,
   canConvertToDyn,
   canDynCheckTo,
   CHILD_T,
@@ -321,8 +323,32 @@ export class ShapeRegistry {
    * writer after all priority candidates have closed. */
   private readonly derivedDeclaredOrderFinalizers: (() => void)[] = [];
   private currentDeclaredOrderPriority: DeclaredOrderPriority = [0, 0];
+  /** The declared-order candidates and the attached names the registry
+   * holds, counted as they are added (journalSizes). */
+  private candidateCount = 0;
+  private extendedCount = 0;
   /** All interned shapes in first-seen order. */
   readonly shapes: IrRecordShape[] = [];
+
+  /** The sizes of the registry's tables, which only grow while shapes are
+   * interned (unit-journal.ts). */
+  journalSizes(): number[] {
+    return [
+      this.revision,
+      this.shapes.length,
+      this.byKey.size,
+      this.byId.size,
+      this.keyedNameKeys.size,
+      this.declaredOrderPriority.size,
+      this.declaredOrderCandidates.size,
+      this.candidateCount,
+      this.derivedDeclaredOrderFinalizers.length,
+      this.recIds.size,
+      this.pendingRec.size,
+      this.extendedNames.size,
+      this.extendedCount,
+    ];
+  }
   /** ts.Types currently being mapped — a BACK-REFERENCE to one of these is
    * the recursive knot (`interface TreeNode { children: TreeNode[] }`):
    * mapType answers a NAMED RECURSIVE SHAPE (recursiveRef) whose fields
@@ -375,6 +401,7 @@ export class ShapeRegistry {
 
   private adoptDeclaredOrder(shape: IrRecordShape, declaredOrder: string[] | undefined): void {
     if (declaredOrder === undefined) return;
+    this.candidateCount++;
     const candidates = this.declaredOrderCandidates.get(shape.id);
     const candidate = { order: declaredOrder, priority: this.currentDeclaredOrderPriority };
     if (candidates) candidates.push(candidate);
@@ -530,6 +557,7 @@ export class ShapeRegistry {
       this.byId.set(id, shape);
       this.shapes.push(shape);
       if (declaredOrder !== undefined) {
+        this.candidateCount++;
         this.declaredOrderCandidates.set(id, [
           { order: declaredOrder, priority: this.currentDeclaredOrderPriority },
         ]);
@@ -592,6 +620,7 @@ export class ShapeRegistry {
     shape.fields = [...shape.fields, ...fresh].sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
+    this.extendedCount += fresh.length;
     this.extendedNames.set(shapeId, [
       ...(this.extendedNames.get(shapeId) ?? []),
       ...fresh.map((f) => f.name),
@@ -674,6 +703,101 @@ export class UnionRegistry {
   private readonly armTags = new Map<string, Map<string, number[]>>();
   /** All interned unions in first-seen order. */
   readonly unions: IrUnionDef[] = [];
+
+  /** The sizes of the tables recursive unions change, which no unit
+   * record carries (unit-journal.ts). */
+  journalSizes(): number[] {
+    return [this.revision, this.recIds.size, this.pendingRec.size];
+  }
+
+  /** The interned unions as a table unit records carry (unit-journal.ts).
+   * An entry is a union's definition; applying it interns the union under
+   * the key its arms give. A unit that adds a recursive union changes
+   * journalSizes, so the unions past a unit's start are interned ones. */
+  journalTable(): JournalTable {
+    return {
+      name: "unions",
+      size: () => this.unions.length,
+      entries: (from) => {
+        const out: string[] = [];
+        for (const def of this.unions.slice(from)) {
+          // JSON writes a number that is not finite as null.
+          const text = JSON.stringify(def);
+          if (/[:,[]null\b/.test(text)) return null;
+          out.push(text);
+        }
+        return out;
+      },
+      apply: (entries) => {
+        for (const entry of entries) {
+          const def = JSON.parse(entry) as IrUnionDef;
+          const key = unionKey(def.arms, def.discriminant);
+          if (this.byKey.has(key)) continue;
+          if (keyedHelperName(this, "u", key, "") !== def.id)
+            throw new InternalCompilerError(`union record ${def.id} does not match its arms`);
+          this.byKey.set(key, def.id);
+          this.byId.set(def.id, def);
+          this.unions.push(def);
+        }
+      },
+      truncate: (from) => {
+        while (this.unions.length > from) {
+          const def = this.unions.pop()!;
+          this.byKey.delete(unionKey(def.arms, def.discriminant));
+          this.byId.delete(def.id);
+          this.keyedNameKeys.delete(def.id);
+        }
+      },
+      contents: () => {
+        // A recursive placeholder still pending fills in place when its
+        // outer frame completes, which changes journalSizes.
+        const texts: (string | null)[] = [];
+        const indexes = new Map<string, number>();
+        const differs = (index: number): boolean => {
+          const text = texts[index] ?? null;
+          return (
+            text !== null &&
+            index < this.unions.length &&
+            JSON.stringify(this.unions[index]!) !== text
+          );
+        };
+        const held: HeldContents = {
+          extend: () => {
+            for (let index = texts.length; index < this.unions.length; index++) {
+              const def = this.unions[index]!;
+              texts.push(this.pendingRec.has(def.id) ? null : JSON.stringify(def));
+              indexes.set(def.id, index);
+            }
+          },
+          changed: () => {
+            for (let index = 0; index < texts.length; index++)
+              if (differs(index)) return this.unions[index]!.id;
+            return null;
+          },
+          changedAmong: (keys) => {
+            for (const key of keys) {
+              const index = indexes.get(key);
+              if (index !== undefined && differs(index)) return key;
+            }
+            return null;
+          },
+          refresh: (keys) => {
+            for (const key of keys) {
+              const index = indexes.get(key);
+              if (
+                index !== undefined &&
+                index < this.unions.length &&
+                (texts[index] ?? null) !== null
+              )
+                texts[index] = JSON.stringify(this.unions[index]!);
+            }
+          },
+        };
+        held.extend();
+        return held;
+      },
+    };
+  }
   /** ts.Types currently being mapped — a back-reference to one is the
    * recursive knot passing through a union (`type Tree = Leaf | Branch`
    * whose Branch arm carries `Tree[]`, the optional field `a?: A` of a
@@ -717,6 +841,12 @@ export class UnionRegistry {
     return id !== undefined && this.pendingRec.has(id);
   }
 
+  /** True when `unionId` is a recursive placeholder whose arms are not
+   * known yet (its outer frame is still mapping, or failed). */
+  isPendingPlaceholder(unionId: string): boolean {
+    return this.pendingRec.has(unionId);
+  }
+
   /** Completes a recursive placeholder with its canonical arm list and
    * registers the structural key (first writer wins, like shapes). */
   finalizeRecursive(t: ts.Type, arms: IrType[], discriminant?: IrUnionDiscriminant): string {
@@ -740,7 +870,7 @@ export class UnionRegistry {
 
   /** Interns canonical arms and discriminator cases, returning their unionId. */
   intern(arms: IrType[], discriminant?: IrUnionDiscriminant): string {
-    const key = JSON.stringify([arms.map(typeKey), discriminant]);
+    const key = unionKey(arms, discriminant);
     let id = this.byKey.get(key);
     if (id === undefined) {
       id = keyedHelperName(this, "u", key, "");
@@ -780,6 +910,11 @@ export class UnionRegistry {
     }
     return tags.get(typeKey(arm))?.find((tag) => typeEquals(def.arms[tag]!, arm)) ?? -1;
   }
+}
+
+/** The key UnionRegistry interns a union's arms and discriminant under. */
+function unionKey(arms: readonly IrType[], discriminant: IrUnionDiscriminant | undefined): string {
+  return JSON.stringify([arms.map(typeKey), discriminant]);
 }
 
 /** Human-readable rendering of an IrType for diagnostics (records expand to
@@ -1255,6 +1390,10 @@ export interface TypeMapperCtx {
    * (erasedGenericMemberType): the signature's own type parameters
    * resolve to `unknown` instead of refusing the mapping. */
   erasingSignature?: ts.Signature;
+  /** Set with erasingSignature: the signature's own type parameters, and
+   * whether the erasure consulted an enclosing binding. An erasure that
+   * resolved only its own parameters answers the same in every context. */
+  erasedMember?: { own: ReadonlySet<ts.Type>; outerConsulted: boolean };
   /** True while an erased generic body lowers (its type parameters are
    * bound to `unknown`). */
   isErasing?: () => boolean;
@@ -1266,6 +1405,28 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** A generic alias reference inside a generic body (`Catalog<G, P>`)
+   * re-instantiated with the instance's bound type arguments: the concrete
+   * checker type its signature instantiates, or null. Consulted only when
+   * the symbolic form does not map. */
+  resolveBoundAliasTs?: TypeParamTsResolver;
+  /** Localized failure: the lenient mapping of a type whose strict mapping
+   * failed at a committed slot (Lowerer.degradedTypes), or null. Consulted
+   * only after the strict mapping (and its bound-alias retry) returns null,
+   * at every depth, so every occurrence of a degraded type maps alike. */
+  degradedType?: (type: ts.Type) => IrType | null;
+  /** Localized failure's lenient mapping (Lowerer.lenientType): a nested
+   * component whose mapping fails maps to the checked dynamic instead, so a
+   * failing type keeps its outer shape with dynamic pieces. Only ever set
+   * on a throwaway context without memoization. */
+  lenient?: boolean;
+  /** With `lenient`: told each component the lenient mapping turned into
+   * the checked dynamic (Lowerer.lenientPieces). */
+  onLenientPiece?: (type: ts.Type) => void;
+  /** Canonical normalization's shadow mode (canon-map.ts): called after
+   * each successful top-level mapping; installed only under
+   * SCRIPTC_CANON_SHADOW=1. It records, and never changes a result. */
+  canonShadow?: (type: ts.Type, mapped: IrType, ctx: TypeMapperCtx) => void;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1328,7 +1489,7 @@ export interface TypeMapperCtx {
    * member graph each time is quadratic work. Generic/mixin contexts opt out
    * through canMemoizeType because the same checker type can map differently
    * under different instantiation bindings. */
-  typeMemo?: Map<string, IrType>;
+  typeMemo?: Map<number, IrType>;
   canMemoizeType?: () => boolean;
   /** True for files the Lowerer actually compiles (its module order). A
    * class type can reach the entry through the TYPE world alone — a jsdoc
@@ -1789,7 +1950,48 @@ export function isFetchHandleType(
   return handle;
 }
 
+/** The array type a class declared `extends Array` maps to (its base type,
+ * `T[]`), or null for every other class. */
+function arrayClassBaseType(
+  classDecl: ts.ClassLikeDeclaration,
+  instance: ts.Type,
+  ctx: TypeMapperCtx,
+): IrType | null {
+  const heritage = classDecl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0];
+  if (heritage === undefined || !ts.isIdentifier(heritage.expression)) return null;
+  if (heritage.expression.text !== "Array") return null;
+  // The polymorphic `this` type of the class names the class's own type.
+  const symbol = instance.getSymbol();
+  const declared =
+    (instance.flags & ts.TypeFlags.TypeParameter) !== 0 && symbol !== undefined
+      ? ctx.checker.getDeclaredTypeOfSymbol(symbol)
+      : instance;
+  if ((declared.flags & ts.TypeFlags.Object) === 0) return null;
+  const target = declared.isTypeReference() ? (declared.getTarget() ?? declared) : declared;
+  const bases = ctx.checker.getBaseTypes(target as ts.InterfaceType);
+  const base = bases[0];
+  if (base === undefined || !ctx.checker.isArrayType(base)) return null;
+  const mapped = mapType(base, ctx);
+  if (mapped?.kind === "array") return mapped;
+  // `extends Array` in JavaScript reads `any[]`: dyn elements (the class's
+  // arrayClassBase).
+  return isJsSourceFile(ts.getSourceFileOfNode(classDecl)) ? { kind: "array", elem: DYN } : null;
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const shadow = ctx.canonShadow;
+  if (shadow === undefined || mapTypeDepth !== 0) return mapTypeEntry(type, ctx);
+  // Shadow mode observes every successful top-level mapping, including the
+  // intrinsic primitives, local class values and memo hits that return
+  // before the mapping proper.
+  const mapped = mapTypeEntry(type, ctx);
+  if (mapped !== null) shadow(type, mapped, ctx);
+  return mapped;
+}
+
+function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
   // provenance, or recursive shape state. Enum literals retain the ordinary
@@ -1811,8 +2013,8 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const memoizable = typeId !== undefined && (ctx.canMemoizeType?.() ?? true);
   // An empty literal's type maps to the empty record as an unreduced union's
   // arm (emptyLiteralArm) and to the checked-dynamic value elsewhere: the two
-  // answers keep separate memo entries.
-  const memoKey = memoizable ? `${ctx.emptyLiteralArm ? 1 : 0}:${typeId}` : null;
+  // answers keep separate memo entries. Type ids are non-negative integers.
+  const memoKey = memoizable ? typeId * 2 + (ctx.emptyLiteralArm ? 1 : 0) : null;
   if (memoKey !== null) {
     const memo = ctx.typeMemo?.get(memoKey);
     if (memo !== undefined) return memo;
@@ -1830,11 +2032,39 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (!topLevel || !ts.isUnreadableConstituentsPanic(e)) throw e;
       mapped = null;
     }
+    // A generic alias the body spells over its own type parameters (`x as
+    // Catalog<G, P>`) stays symbolic in the checker; when that form does not
+    // map, the instance's concrete instantiation of the same alias does.
+    if (mapped === null && ctx.resolveBoundAliasTs) {
+      const concrete = ctx.resolveBoundAliasTs(type);
+      if (concrete !== null && concrete !== type) {
+        mapped = mapType(concrete, ctx);
+        if (mapped !== null) contextResolutions++;
+      }
+    }
+    // Localized failure: a type that failed at a committed slot maps to its
+    // lenient form. It counts as a context resolution so neither it nor a
+    // type containing it is memoized: the strict form may map elsewhere.
+    if (mapped === null && ctx.degradedType) {
+      const lenient = ctx.degradedType(type);
+      if (lenient !== null) {
+        mapped = lenient;
+        contextResolutions++;
+      }
+    }
+    // Push-down (stage L3): in a lenient mapping, the smallest failing
+    // component is the checked dynamic.
+    if (mapped === null && ctx.lenient === true && !topLevel) {
+      mapped = DYN;
+      contextResolutions++;
+      ctx.onLenientPiece?.(type);
+    }
     if (
       mapped !== null &&
       memoKey !== null &&
       topLevel &&
       contextResolutions === sensitivityAtEntry &&
+      ctx.erasingSignature === undefined &&
       (ctx.canMemoizeType?.() ?? true)
     ) {
       ctx.typeMemo?.set(memoKey, mapped);
@@ -1991,7 +2221,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     !ERASURE_KEPT_CONTAINERS.has(ts.symbolNameOf(type.getSymbol()) ?? "") &&
     mentionsErasedTypeParam(type, ctx, 0)
   ) {
-    contextResolutions++;
+    if (!ctx.erasedMember || ctx.erasedMember.outerConsulted) contextResolutions++;
     return DYN;
   }
   // Readonly<C> over a program class (Object.freeze's result type) is the
@@ -2001,7 +2231,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (resolveTypeParam && type.flags & ts.TypeFlags.TypeParameter) {
     const bound = resolveTypeParam(type);
     if (bound) {
-      contextResolutions++;
+      if (!ctx.erasedMember?.own.has(type)) contextResolutions++;
       return bound;
     }
   }
@@ -2578,6 +2808,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return viaMixin;
       }
     }
+    // A class declared `extends Array` (frontend/lowering/builtins/
+    // array-classes.ts): its instances are arrays of the base's elements.
+    {
+      const arrayBase = arrayClassBaseType(classDecl, widened, ctx);
+      if (arrayBase !== null) return arrayBase;
+    }
     if (classExprNeedsContext(classDecl)) {
       const local = ctx.localClassInstance?.(classDecl, widened);
       if (local) contextResolutions++;
@@ -3014,6 +3250,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // util.inspect as a value (a custom inspect method's third parameter is
+  // `typeof inspect`): the runtime's inspect function, called through the
+  // checked-dynamic boundary.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "inspect" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isFunctionDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
+  // util.inspect's options bag, which inspect and formatWithOptions read
+  // at run time (its sorted option can be a comparator function), and the
+  // options custom inspect functions receive.
+  if (
+    (isStdlibInterface("InspectOptions") || isStdlibInterface("InspectOptionsStylized")) &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "util"),
+    )
+  )
+    return DYN;
   // dns.LookupAllOptions (`all: true`, the overload whose callback takes
   // an address list): a lookup option bag dns.lookup reads at run time.
   // It rides checked-dynamic storage, so the lookup function type that
@@ -3077,15 +3337,30 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList: native handles (scr_net.c)
-  // whose getters and methods dispatch through the handle.
+  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
+  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
+  // methods dispatch through the handle.
   if (
     ((psym !== undefined && ts.symbolName(psym) === "SocketAddress") ||
-      (psym !== undefined && ts.symbolName(psym) === "BlockList")) &&
+      (psym !== undefined && ts.symbolName(psym) === "BlockList") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEType") ||
+      (psym !== undefined && ts.symbolName(psym) === "MIMEParams")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return DYN;
+  }
+  // The functions node:util's debounce and throttle return
+  // (scr_util_timing.c): native functions with their own members and
+  // getters.
+  if (
+    psym !== undefined &&
+    (ts.symbolName(psym) === "DebouncedFunction" || ts.symbolName(psym) === "ThrottledFunction") &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
     )
   ) {
     return DYN;
@@ -4953,6 +5228,19 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const record = mapRecordType(widened, ctx);
     if (record) return record;
   }
+  // An intersection whose constituents all map to ONE representation is
+  // that representation. An intersection that restates an optional member
+  // as required (`Opts & { files: Array<{ path: string }> }` over
+  // `files?: Array<{ path: string }>`) gives the member the type `A[] & B[]`
+  // with two separately written but structurally equal element literals;
+  // the checker keeps both, while their arrays (tuples, maps, ...) intern
+  // to one IR type. Reached only after every other intersection rule
+  // declined, so intersections that already mapped keep their mapping. A
+  // dynamic result stays unmapped: two opaque types are not one type.
+  if (widened.isIntersectionType()) {
+    const same = mapEqualConstituentsIntersection(widened, ctx);
+    if (same) return same;
+  }
   // Unions. `boolean` is internally `true | false`, and narrowing produces
   // literal unions like `"a" | "b"` — parts that map to the SAME IR type
   // collapse (deduplicated by typeKey), so a single surviving arm is just
@@ -5237,10 +5525,12 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     // A parameter a TypeScript program types `any` takes whatever the
     // caller passes: the checked-dynamic slot, as an `any`-typed binding
     // already is (dynFallbackType). Declaration files keep their paths.
-    // Only function declarations, spelled function types and lambda
-    // parameters whose default is the only source of their type (`(n =
-    // lookup() ?? 5) => ...` with an `any` lookup): other lambdas and
-    // methods in object literals keep their existing checked-dynamic story.
+    // Only function declarations, spelled function types, method and call
+    // signatures of interfaces and type literals (`execute(params: any):
+    // Promise<R>`), and lambda parameters whose default is the only source
+    // of their type (`(n = lookup() ?? 5) => ...` with an `any` lookup):
+    // other lambdas and methods in object literals keep their existing
+    // checked-dynamic story.
     if (
       !pt &&
       !rest &&
@@ -5249,6 +5539,8 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       decl.parent !== undefined &&
       (ts.isFunctionDeclaration(decl.parent) ||
         ts.isFunctionTypeNode(decl.parent) ||
+        ts.isMethodSignatureDeclaration(decl.parent) ||
+        ts.isCallSignatureDeclaration(decl.parent) ||
         ((ts.isArrowFunction(decl.parent) || ts.isFunctionExpression(decl.parent)) &&
           decl.initializer !== undefined &&
           decl.type === undefined &&
@@ -5321,8 +5613,19 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
     if (pt) pt = jsOpenObjectType(decl, pt, ctx.shapes, ctx.unions);
     // Belt and braces for non-strict type worlds: an optional param's
     // ABI slot is always the undefined-armed union (strictNullChecks
-    // already spells it that way; arm it here if the world didn't).
-    if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn") {
+    // already spells it that way; arm it here if the world didn't). A
+    // back-reference to a union still being mapped (`options?: { then?:
+    // (ctx: Sub) => void }` where Sub extends the interface declaring the
+    // method) is a recursive placeholder with no arms yet; when the checker
+    // spelled the parameter `X | undefined`, the placeholder receives that
+    // undefined arm when its frame finishes.
+    const pendingOptional =
+      pt?.kind === "union" &&
+      ctx.unions.isPendingPlaceholder(pt.unionId) &&
+      ts
+        .constituentTypes(checker.getTypeOfSymbol(p))
+        .some((part) => (part.flags & ts.TypeFlags.Undefined) !== 0);
+    if (optional && pt && pt.kind !== "void" && pt.kind !== "dyn" && !pendingOptional) {
       const armed = withUndefinedArm(pt, ctx.unions);
       if (!armed) return null;
       pt = armed;
@@ -6924,6 +7227,19 @@ export function withUnitArm(
  * assigned keys, which is also Node's answer for Object.assign(fn, obj)
  * (a function's own length/name are non-enumerable). Null whenever the
  * shape doesn't fit — the caller falls through to the plain-func mapping. */
+/** The IR type every constituent of an intersection maps to, or null when a
+ * constituent is unmappable or dynamic, or two constituents differ. */
+function mapEqualConstituentsIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  let same: IrType | null = null;
+  for (const part of ts.constituentTypes(widened)) {
+    const mapped = mapType(part, ctx);
+    if (mapped === null || mapped.kind === "dyn") return null;
+    if (same === null) same = mapped;
+    else if (!typeEquals(same, mapped)) return null;
+  }
+  return same;
+}
+
 function mapHybridCallableIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, shapes } = ctx;
   if (!widened.isIntersectionType()) return null;
@@ -7420,10 +7736,21 @@ export function erasedGenericMemberType(t: ts.Type, ctx: TypeMapperCtx): IrType 
   const sig = sigs[0]!;
   const own = new Set<ts.Type>(sig.getTypeParameters());
   const outer = ctx.resolveTypeParam;
+  // Resolving only the member's own parameters does not make the erasure
+  // context-sensitive, so a recursive record holding a generic method
+  // (`interface Sub extends Base { send<T>(m: Msg<T>): void }` reached
+  // from Base) still closes its knot. Consulting an enclosing binding does.
+  const erasedMember = { own, outerConsulted: false };
   const erased = mapType(t, {
     ...ctx,
     erasingSignature: sig,
-    resolveTypeParam: (param) => (own.has(param) ? DYN : (outer?.(param) ?? null)),
+    erasedMember,
+    resolveTypeParam: (param) => {
+      if (own.has(param)) return DYN;
+      if (outer === undefined) return null;
+      erasedMember.outerConsulted = true;
+      return outer(param);
+    },
   });
   return erased?.kind === "func" ? erased : undefined;
 }
@@ -8455,6 +8782,16 @@ function dynSubsumableUnionArm(arm: IrType, ctx: TypeMapperCtx): boolean {
     // `string | URL | Request`, fetch's own input type under @types/node.
     case "url":
       return true;
+    // A function the checked-dynamic tree can box (each parameter checks
+    // in, the result converts out) is held by reference there, and
+    // `typeof x === "function"` narrows it back out: `Progress | AbortSignal`
+    // beside fetch's handles.
+    case "func":
+      return canBoxFuncIntoDyn(
+        arm,
+        (id) => ctx.shapes.get(id),
+        (id) => ctx.unions.get(id),
+      );
     case "record":
     case "array":
     // `T | Promise<T>` with T bound to `unknown`: the checked-dynamic value

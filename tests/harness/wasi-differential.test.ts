@@ -316,6 +316,8 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     // Weak-collection hashes mix 32-bit pointers in 64 bits.
     "4591-weak-keys-union-records.ts",
     "7742-weak-collections-many-keys.ts",
+    // zlib's portable build (CPU_NO_SIMD) compresses to Node's bytes.
+    "8405-zlib-compressed-bytes.ts",
   ])("the LLVM target runs %s byte-identically to Node", async (fixture) => {
     const entry = join(repoRoot, "tests/corpus", fixture);
     const outDir = await mkdtemp("/tmp/scriptc-wasi-");

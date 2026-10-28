@@ -1024,6 +1024,18 @@ export function isRefCounted(t: IrType): boolean {
 
 /* ── module ────────────────────────────────────────────────────────────── */
 
+/** The island module tree of a program (node-islands/modules.ts): paths
+ * relative to `root`, the directory on the build machine that holds them.
+ * Only the relative paths enter an executable. */
+export interface IrNodeIslandModules {
+  root: string;
+  files: { path: string; size: number; sha256: string }[];
+  links: { path: string; target: string }[];
+  /** Where the executable finds the tree: absent when it carries the tree
+   * itself, else a `$ORIGIN/` path (`--libnode=beside`). */
+  location?: string;
+}
+
 export interface IrModule {
   /** Bumped on any breaking IR change; serialize.ts refuses mismatches. */
   irVersion: 17;
@@ -1063,10 +1075,24 @@ export interface IrModule {
    * closures boxed for package code return records and arrays as live
    * capsules, so a value that comes back keeps its identity. */
   declBoundary?: true;
+  /** Package files compiled from shape inference's typed overlay
+   * (frontend/shape-inference/overlay.ts), each with its package name: a
+   * checked conversion in them checks an analysis-proven fact, so its
+   * failure reports a compiler analysis bug instead of a type error. */
+  inferredFactFiles?: { file: string; pkg: string }[];
+  /** Origins of package-declared types checked by `dynCheck.origin`
+   * (frontend/lowering/decl-origin.ts): fields separated by \x1f —
+   * package, version, suggested range, selector, where it is declared,
+   * declared type. */
+  declOrigins?: string[];
   /** The program constructs LifetimeRegion (@scriptc/experimental): every
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type (SCR_ARR_FOREIGN), stored
+   * through dynamic views; "*" for every array. Absent when none can. */
+  foreignElementKeys?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
@@ -1075,6 +1101,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** Source ranges ("file\0start\0end") of untyped property writes in
+   * sloppy-mode code (frontend frozen-records.ts sloppyDynamicWrites):
+   * their dyn.keySet/keySetComputed calls ignore an assignment that strict
+   * mode refuses with a TypeError. */
+  sloppyDynWrites?: string[];
   /** The program freezes, seals or prevents extensions of untyped values
    * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
    * that can be held there carry an integrity word, which the runtime sets
@@ -1086,6 +1117,18 @@ export interface IrModule {
    * evaluation is itself awaited, so promise jobs queued by its body run
    * first. The event loop selects the matching first checkpoint. */
   commonJsEntry?: boolean;
+  /** Programs that call into Node islands (`nodeIsland.*` libCalls): the
+   * libnode pack directory (absolute, or `$ORIGIN/`-relative to the
+   * executable) and the exact Node version its bridge links. Set by the
+   * executable build (node-islands/libnode.ts); the emitted main records
+   * both before %main. */
+  nodeIsland?: {
+    libnode: string;
+    nodeVersion: string;
+    /** The modules the calls load (node-islands/modules.ts), when any call
+     * loads a file. */
+    modules?: IrNodeIslandModules;
+  };
   /** Outbound native FFI declarations used by `ffiCall` expressions.
    * These are link-time C ABI imports, not runtime dynamic-library handles:
    * executable builds resolve their symbols from the manifest's archive
@@ -1528,6 +1571,17 @@ export interface IrClassDef {
    * RUNTIME_ERROR_CLASSES). User subclasses are ordinary emitted classes
    * whose layout prefix embeds ScrError's fields. */
   runtime?: true;
+  /** A class declared `extends Array`: its instances are arrays of this
+   * element type. The struct begins with the runtime's array header (the
+   * reference count is the array's, field 0) and the class's fields follow
+   * it; the runtime finds the class through the array's ext. */
+  arrayElem?: IrType;
+  /** The function (array) => dyn listing such a class's own fields
+   * (ScrArrClass.fields); absent when it declares none. */
+  arrayFields?: string;
+  /** The function (length) => array constructing such a class for
+   * ArraySpeciesCreate (ScrArrClass.species). */
+  arraySpecies?: string;
   /** Base class name (single inheritance, `extends`). A class is IN A
    * HIERARCHY when it has a base or is some class's base; hierarchy classes
    * carry a vtable word after `rc` (backends), standalone classes are laid
@@ -2447,10 +2501,13 @@ export type IrStrIntrinsicMethod =
   // surrogate, and the copy with each one replaced by U+FFFD.
   | "isWellFormed"
   | "toWellFormed"
-  // The string iterator's step: the full code-POINT character at a UTF-16
-  // index (astral chars come back whole where charAt truncates) — for-of
-  // over strings desugars onto it, advancing by the result's length.
-  | "cpAt";
+  // The string iterator over the WTF-8 bytes: the byte count of a string,
+  // and the code-point character that starts at a byte offset (a lone
+  // surrogate is a one-unit character). for-of, spread and Array.from of a
+  // string walk a byte cursor with them, advancing by the character's
+  // byte count; the cursor is always a character start below the count.
+  | "byteLength"
+  | "cpAtByte";
 
 /** The typed-array/Buffer method surface (bytesIntrinsic). Receiver/arg
  * conventions (validated): `length`/`byteLength` are property reads → f64;
@@ -4033,12 +4090,21 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `origin`: the target type comes from an npm package's declaration;
+   * an index into `IrModule.declOrigins`. A failing check's TypeError then
+   * names the declaration and the type patch that would admit the value
+   * (scr_type_origin.c). */
   | {
       kind: "dynCheck";
       value: IrExpr;
       preserveRefs?: true;
       adopt?: true;
       exact?: true;
+      /** Shape inference's overlay: this conversion checks an
+       * analysis-proven fact ("<package> <file>:<line>"); a failure is a
+       * compiler analysis bug and reports itself as one. */
+      inferredSite?: string;
+      origin?: number;
       type: IrType;
       loc: SrcLoc;
     };

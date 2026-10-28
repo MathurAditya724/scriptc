@@ -1,4 +1,5 @@
-/* Diagnostic codes live in ONE registry. Message strings are never inlined
+/* Diagnostics live in ONE registry, and every code is claimed by its row in
+ * codes.ts (DIAGNOSTIC_CODES). Message strings are never inlined
  * at rejection sites — every "not supported yet" the compiler can produce is
  * enumerable here, which is the seed of the future coverage report
  * ("N constructs prevented static compilation, grouped by code").
@@ -64,17 +65,28 @@
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
  *            likely-hot functions that use untyped values (SC6101,
- *            diagnostics/dynamic-tier.ts)
- *   SC8xxx  Node island policy: packages and modules outside the native
- *            subset that run (or, in report-only mode, would run) in a
- *            Node island — unknown project configuration (SC8004), a
- *            package required to be native (SC8003) or every island
- *            refused (SC8002) while outside the native subset, and the
- *            R2 object-model constructs in user JavaScript (SC8101–SC8105,
- *            behind --strict-user-js)
+ *            diagnostics/dynamic-tier.ts), package files whose projected
+ *            declaration types were dropped (SC6102), and shape inference's
+ *            overlay report: what it typed and how many inferred facts the
+ *            build checks (SC6103, frontend/shape-inference)
+ *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
+ *            Acyclic or ProgramLifetime contract that does not hold or
+ *            cannot be checked (SC7001–SC7008, contracts/check.ts)
+ *   SC8xxx  Node islands: packages and modules outside the native subset
+ *            that run (or, in report-only mode, would run) in a Node
+ *            island — unknown project configuration (SC8004), a package
+ *            required to be native (SC8003) or every island refused
+ *            (SC8002) while outside the native subset, and the R2
+ *            object-model constructs in user JavaScript (SC8101–SC8105,
+ *            behind --strict-user-js); programs that call into Node.js
+ *            where the build finds no usable libnode pack (SC8005), or
+ *            cannot collect the modules a call loads (SC8006); and type
+ *            patches from `scriptc.typePatches` that did not apply as
+ *            written (SC8030–SC8033, warnings)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { DiagnosticCode } from "./codes.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
  * output says only what is and isn't supported (plus hints); scheduling is
@@ -82,7 +94,7 @@ import type { SrcLoc } from "../ir/ir.js";
 export type Milestone = "M1" | "M2" | "M3" | "M4" | "M5" | "later";
 
 export interface ScrDiagnostic {
-  code: `SC${number}`;
+  code: DiagnosticCode;
   message: string;
   loc: SrcLoc;
   milestone?: Milestone;
@@ -108,6 +120,64 @@ export interface ScrDiagnostic {
    * and class member body: it throws when the module initializes, which is
    * program startup for a module the entry imports. */
   startup?: true;
+  /** Localized failure, report-only (stage L0): set where a type with no
+   * static lowering poisoned a slot (Lowerer.badType and the dyn class
+   * field policy). Never part of the rendered message. */
+  typeFailure?: TypeFailure;
+  /** Localized failure, report-only: the declaration this diagnostic
+   * rejected, as a failure-group key. Set when a reference flushes a
+   * deferred declaration's diagnostics, and on the diagnostics of a
+   * declaration statement whose bindings were blocked. */
+  rejects?: string;
+  /** Localized failure, report-only: the failure groups (rejected
+   * declarations, blocked statements) that the statement committing this
+   * diagnostic used. A cascade clears when every one of them would
+   * degrade instead of failing. */
+  cause?: readonly string[];
+}
+
+/** Where a type failure sits (localized-failure design §3.6): a
+ * declaration slot, a member of a declared type, or an expression's own
+ * type. */
+export type TypeFailureSlot =
+  | "field"
+  | "param"
+  | "return"
+  | "local"
+  | "global"
+  | "loop"
+  | "member"
+  | "expression";
+
+/** Which badType branch (or policy fence) refused the type. */
+export type TypeFailureFamily =
+  | "node-types"
+  | "fetch-ambient"
+  | "enum-object"
+  | "stdlib-index"
+  | "index-signature"
+  | "package"
+  | "generic-signature"
+  | "overloads"
+  | "intersection"
+  | "component"
+  | "stdlib-nominal"
+  | "record-member"
+  | "unsupported"
+  | "dyn-field-policy";
+
+/** A type failure's structured payload: what the commit points of the
+ * localized-failure design inspect (PoisonError.failure carries the same
+ * object). `degradable` is the §3.7 classification: a checked-dynamic slot
+ * would keep the program's meaning. */
+export interface TypeFailure {
+  slot: TypeFailureSlot;
+  /** The slot's name (`_customTools`, `listAll`, `x`), or the expression
+   * text for expression slots. */
+  name: string;
+  declaredType: string;
+  family: TypeFailureFamily;
+  degradable: boolean;
 }
 
 /** SC3002–SC3004 — native-helper target, installation, and execution
@@ -129,6 +199,29 @@ export function nativeCodegenDiag(
     message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
+  };
+}
+
+/** SC8005 — the program calls into Node.js (@scriptc/node), and the build
+ * found no usable libnode pack to record into the binary. */
+export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+  return {
+    code: "SC8005",
+    message,
+    loc: { file, start: 0, end: 0 },
+    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
+  };
+}
+
+/** SC8006 — a Node island call whose modules the build cannot collect into
+ * the executable: a computed specifier, or a module of the program that
+ * loads others through computed specifiers. */
+export function nodeIslandModuleDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint: "name the module with a string literal (a relative path or a package name); the build ships the modules it can see with the executable",
   };
 }
 
@@ -262,6 +355,25 @@ export function nodeIslandsOffModuleDiag(
     loc,
     hint: "allow Node islands (--node-islands=auto or explicit), or remove the marking",
   };
+}
+
+/** SC8030–SC8033 — a type patch (`scriptc.typePatches`) that did not
+ * apply as written: no range covers the installed copy (SC8030), its
+ * selector matches nothing (SC8031), the declaration already has the type
+ * (SC8032), or the selector is ambiguous or not patchable (SC8033).
+ * Warnings: the build goes on with the declarations it has. */
+export function typePatchDiag(
+  code: "SC8030" | "SC8031" | "SC8032" | "SC8033",
+  message: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return { code, message, loc, hint };
+}
+
+/** True for the type patch warnings (SC8030–SC8033). */
+export function isTypePatchCode(code: string): boolean {
+  return /^SC803[0-3]$/.test(code);
 }
 
 /** SC8003 — a package marked "native" is outside the native subset. */
@@ -562,7 +674,7 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
 };
 
 export function unsupportedDiag(
-  code: keyof typeof UNSUPPORTED & `SC${number}`,
+  code: keyof typeof UNSUPPORTED & DiagnosticCode,
   loc: SrcLoc,
   featureOverride?: string,
   hintOverride?: string,
@@ -855,6 +967,21 @@ export function nativeAddonDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
     milestone: "later",
     hint: "expose the native operation as a plain C ABI function in an object or static archive, then bind a signature-only TypeScript declaration with --ffi; Node-API callbacks themselves require Node (https://scriptc.dev/ffi#replacing-a-node-api-addon)",
     reason: "native-addon",
+  };
+}
+
+/** A createRequire require or require.resolve call whose specifier is
+ * computed at run time, where the runtime resolves it like Node
+ * (scr_require.c). Coverage lists the call as deferred: a require whose
+ * specifier resolves to a module ends the program with this code, because
+ * the module graph is fixed at build time. */
+export function computedRequireDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `${surface} with a computed specifier resolves at run time; a require of a specifier that resolves to a module, such as a native addon, ends the program`,
+    loc,
+    milestone: "later",
+    hint: 'require("<static string literal>") compiles the module into the program; native addons need a replacement through native FFI (https://scriptc.dev/ffi#replacing-a-node-api-addon)',
   };
 }
 

@@ -63,8 +63,16 @@ test.skipIf(process.platform !== "linux")(
       expect(merge.stdout).toBe(`${merged}\n`);
 
       const optimized = join(dir, "optimized");
-      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      const fresh = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\n");
+      // The build reports how the profile matched the program's functions.
+      expect(fresh.stderr).toMatch(
+        /^scriptc: profile .*: [1-9]\d* functions annotated, 0 mismatched, \d+ without a record\n$/,
+      );
+      expect(fresh.stderr).toContain(`scriptc: profile ${merged}: `);
+      // A build from the cache reports the same match.
+      const again = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      expect(again.stderr).toBe(fresh.stderr);
 
       // A sparse profile leaves out the runtime functions the runs never
       // reached.
@@ -77,10 +85,15 @@ test.skipIf(process.platform !== "linux")(
       await scriptc(["build", entry, "--profile-use", sparse, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\n");
 
-      // A profile from an older version of the program still builds it.
+      // A profile from an older version of the program still builds it. The
+      // edited function no longer matches its counts, and the build warns.
       await writeFile(entry, PROGRAM + 'console.log("edited");\n');
-      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
+      const stale = await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\nedited\n");
+      expect(stale.stderr).toMatch(/ [1-9]\d* mismatched, /);
+      expect(stale.stderr).toMatch(
+        /\nscriptc: warning: [1-9]\d* of the \d+ functions .* describes \([\d.]+%\) changed since it was collected and are optimized without their counts; collect the profile again\n$/,
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -96,10 +109,6 @@ test("profile options are refused where they cannot apply", async () => {
     await writeFile(entry, PROGRAM);
     for (const [args, message] of [
       [["build", entry, "--emit=llvm", "--profile-use", "a.profdata"], "--emit=exe"],
-      [
-        ["build", entry, "--profile-generate", "%p.profraw", "--profile-use", "a.profdata"],
-        "cannot be combined",
-      ],
       [["coverage", entry, "--profile-use", "a.profdata"], "build/run option"],
       [["merge-profiles", "a.profraw"], "merge-profiles takes -o"],
       [["merge-profiles", "-o", "out.profdata"], "merge-profiles takes -o"],

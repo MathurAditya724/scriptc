@@ -225,7 +225,18 @@ static void scr_module_registry_cleanup(void) {
  * own cleanup only when the value is first materialized.  That is equivalent
  * at process exit and retains the RC-audit cleanup guarantee for the values a
  * program actually observes. */
+#if defined(__linux__) && !defined(SCR_LIB)
+/* The heap census of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts) writes its counters at exit, from here and from
+ * scr_process_exit; every other program leaves the weak reference null.
+ * Libraries have no census, and their archives declare no such symbol. */
+extern void scr_census_write(void) __attribute__((weak));
+#endif
+
 static void scr_lib_cleanup(void) {
+#if defined(__linux__) && !defined(SCR_LIB)
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_module_registry_cleanup();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
@@ -716,8 +727,9 @@ ScrDyn *scr_process_versions(void) {
     scr_dyn_obj_set(scr_versions_object, "openssl", 7, scr_dyn_new_str(openssl));
     scr_str_release(node);
     scr_str_release(openssl);
-    for (size_t i = 0; i < scr_versions_object->v.obj.len; i++) {
-      scr_versions_object->v.obj.entries[i].writable = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_versions_object); i++) {
+      ScrDynProp prop = scr_dyn_obj_prop_at(scr_versions_object, i);
+      scr_dyn_obj_set_attrs_at(scr_versions_object, i, false, prop.enumerable, prop.configurable);
     }
     scr_atexit(&scr_versions_object_cleanup);
   }
@@ -914,8 +926,8 @@ static void scr_env_store(ScrDyn *out, const char *text, size_t ks, size_t ke,
 }
 
 static int scr_env_entry_order(const void *left, const void *right) {
-  const ScrDynEntry *a = *(const ScrDynEntry *const *)left;
-  const ScrDynEntry *b = *(const ScrDynEntry *const *)right;
+  const ScrDynProp *a = left;
+  const ScrDynProp *b = right;
   size_t n = a->key_len < b->key_len ? a->key_len : b->key_len;
   int cmp = memcmp(a->key, b->key, n);
   return cmp ? cmp : (a->key_len > b->key_len) - (a->key_len < b->key_len);
@@ -991,14 +1003,14 @@ static ScrDyn *scr_env_parse_content(const ScrStr *input, bool ordinary) {
   /* Node's std::map orders UTF-8 keys before installing object properties.
    * Ordinary objects ignore string-valued __proto__ assignments; loading
    * the native environment retains that name as an ordinary variable. */
-  size_t count = entries->v.obj.len;
-  const ScrDynEntry **sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
+  size_t count = scr_dyn_obj_count(entries);
+  ScrDynProp *sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
   if (count && !sorted) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < count; i++) sorted[i] = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < count; i++) sorted[i] = scr_dyn_obj_prop_at(entries, i);
   if (count > 1) qsort(sorted, count, sizeof(*sorted), scr_env_entry_order);
   ScrDyn *result = ordinary ? scr_dyn_new_obj() : scr_dyn_new_obj_null_proto();
   for (size_t i = 0; i < count; i++) {
-    const ScrDynEntry *entry = sorted[i];
+    const ScrDynProp *entry = &sorted[i];
     if (ordinary && entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0) continue;
     if (!ordinary) {
       scr_dyn_obj_set(result, entry->key, entry->key_len, scr_dyn_retain(entry->value));
@@ -1103,15 +1115,15 @@ void scr_process_load_env_file(const ScrDyn *value) {
   if (!content) return;
   ScrDyn *entries = scr_env_parse_content(content, false);
   scr_str_release(content);
-  for (size_t i = 0; i < entries->v.obj.len; i++) {
-    const ScrDynEntry *entry = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(entries); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(entries, i);
     /* Node normalizes each raw sorted entry immediately before checking
      * the environment. Distinct invalid byte keys can normalize alike;
      * the first absent name wins, rather than the last parsed entry. */
-    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry->key, entry->key_len);
+    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry.key, entry.key_len);
     ScrStr *existing = scr_env_get(key);
     if (!existing) {
-      const ScrStr *raw = entry->value->v.str;
+      const ScrStr *raw = entry.value->v.str;
       ScrStr *value = scr_str_from_utf8_lossy((const uint8_t *)raw->data, raw->len);
       scr_env_set(key, value);
       scr_str_release(value);
@@ -2054,6 +2066,48 @@ bool scr_process_has_exit_code(void) {
   return scr_exit_code_assigned || scr_exit_code_hint_get() != 0;
 }
 
+#if defined(__linux__) && !defined(SCR_LIB)
+#include <link.h>
+#include <sys/mman.h>
+/* Text on huge pages (huge-text.ts). An executable with enough program code
+ * is linked with 2 MiB segment alignment, so each 2 MiB window inside its
+ * text segment starts at a 2 MiB file offset, and the kernel maps a window
+ * with one huge page when the page cache holds it as one 2 MiB folio.
+ * MADV_HUGEPAGE on those windows makes the kernel read a window that is not
+ * cached as a 2 MiB folio. glibc runs it from .preinit_array, before _init
+ * and the constructors fault in any of the text; musl, which has no
+ * .preinit_array, runs it as a constructor. Executables with 4 KiB alignment
+ * make no call. */
+#define SCR_TEXT_HUGE_PAGE ((uintptr_t)2 << 20)
+
+static int scr_text_segment(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  uintptr_t *range = data;
+  for (size_t i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+    if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X) || ph->p_align < SCR_TEXT_HUGE_PAGE) continue;
+    range[0] = (uintptr_t)info->dlpi_addr + (uintptr_t)ph->p_vaddr;
+    range[1] = range[0] + (uintptr_t)ph->p_memsz;
+    break;
+  }
+  return 1; /* the first object is the executable */
+}
+
+static bool scr_text_huge_pages_done;
+
+__attribute__((constructor)) static void scr_text_huge_pages(void) {
+  if (scr_text_huge_pages_done) return;
+  scr_text_huge_pages_done = true;
+  uintptr_t range[2] = {0, 0};
+  (void)dl_iterate_phdr(scr_text_segment, range);
+  uintptr_t lo = (range[0] + SCR_TEXT_HUGE_PAGE - 1) & ~(SCR_TEXT_HUGE_PAGE - 1);
+  uintptr_t hi = range[1] & ~(SCR_TEXT_HUGE_PAGE - 1);
+  if (hi > lo) (void)madvise((void *)lo, hi - lo, MADV_HUGEPAGE);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const scr_text_huge_pages_entry)(void) =
+    scr_text_huge_pages;
+#endif
+
 #if defined(__linux__)
 #include <sched.h>
 #include <signal.h>
@@ -2136,6 +2190,9 @@ void scr_process_exit(double code) {
   fflush(stdout);
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#ifndef SCR_LIB
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_detach_teardown();
 #endif
   _Exit((int)code);
@@ -2810,10 +2867,9 @@ ScrDyn *scr_process_release(void) {
 #endif
 #undef SCR_RELEASE_FILE
 #undef SCR_RELEASE_PREFIX
-    for (size_t i = 0; i < scr_release_object->v.obj.len; i++) {
-      scr_release_object->v.obj.entries[i].writable = false;
-      scr_release_object->v.obj.entries[i].configurable = false;
-    }
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_release_object); i++)
+      scr_dyn_obj_set_attrs_at(scr_release_object, i, false,
+                               scr_dyn_obj_prop_at(scr_release_object, i).enumerable, false);
     scr_atexit(&scr_release_object_cleanup);
   }
   return scr_dyn_retain(scr_release_object);
@@ -6344,6 +6400,56 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   return arr;
 }
 
+/* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
+ * Directories are listed in queue order: the base, then each directory in
+ * the order its entry was listed. Each entry's path is path.join of its
+ * directory and name; the result holds it relative to the base
+ * (path.relative). An entry stat(2) reports as a directory, a symlink to
+ * one included, joins the queue. */
+ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrStr **queue = malloc(cap * sizeof *queue);
+  if (!queue) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  bool failed = false;
+  for (size_t at = 0; at < len && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+      ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+      scr_arr_push_ref(parts, scr_str_retain(queue[at]));
+      scr_arr_push_ref(parts, scr_fs_scandir_name(scan, i));
+      ScrStr *full = scr_path_join(parts);
+      scr_arr_release(parts);
+      scr_arr_push_ref(out, scr_path_relative(base, full));
+      struct stat st;
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (len == cap) {
+          cap *= 2;
+          queue = realloc(queue, cap * sizeof *queue);
+          if (!queue) scr_trap("scriptc: out of memory\n");
+        }
+        queue[len++] = full;
+      } else {
+        scr_str_release(full);
+      }
+    }
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < len; i++) scr_str_release(queue[i]);
+  free(queue);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
+}
+
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
  * One readdir pass capturing name + entry kind for the emitter's Dirent
  * assembly (scr_runtime.h has the contract). Kinds are libuv's UV_DIRENT
@@ -6828,11 +6934,17 @@ double scr_math_round(double x) {
   return (r == 0.0 && x < 0.0) ? -0.0 : r;
 }
 
-/* IEEE pow(±1, ±Infinity) and pow(1, NaN) return 1; ECMAScript requires
- * NaN. The other special cases, including signed zero and odd integer
- * powers, follow libm. */
+/* V8's math::pow: the platform pow, as Node's Math.pow and ** call it,
+ * after the cases V8 answers itself. IEEE pow(±1, ±Infinity) and
+ * pow(1, NaN) return 1; ECMAScript requires NaN. A NaN base becomes the
+ * quiet NaN, and the exponents 2 and 0.5 answer base * base and
+ * sqrt(base + 0) (+Infinity for an infinite base), as V8's optimizing
+ * compilers do; pow can differ from those in the last bit. */
 double scr_math_pow(double base, double exponent) {
   if (isnan(exponent) || (isinf(exponent) && fabs(base) == 1.0)) return NAN;
+  if (isnan(base)) base = NAN;
+  if (exponent == 2.0) return base * base;
+  if (exponent == 0.5) return isinf(base) ? INFINITY : sqrt(base + 0.0);
   /* 2 ** n for an integer n in the double range is an exact power of two,
    * the value pow returns; its bits are the exponent alone. */
   if (base == 2.0 && exponent >= -1074.0 && exponent <= 1023.0) {
@@ -11588,8 +11700,8 @@ double scr_date_get_timezone_offset(double ms) {
  * from local fields reads those fields back. */
 
 /* The host zone's offset (local - UTC) in ms at UTC instant `ms` (an
- * integral time value within about ±8.65e15). */
-static bool scr_date_offset_at(double ms, double *out) {
+ * integral time value within about ±8.65e15), from the host's localtime. */
+static bool scr_date_offset_at_uncached(double ms, double *out) {
   long long cms = (long long)ms;
   double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
@@ -11609,6 +11721,60 @@ static bool scr_date_offset_at(double ms, double *out) {
     tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
   *out = (local_as_utc - basis_secd) * 1000.0;
   return true;
+}
+
+/* Offsets at UTC midnights, for scr_date_offset_at. A day whose two
+ * midnights have the same offset has that offset throughout, given at most
+ * one transition per day (scr_date_local_to_utc already takes transitions
+ * to be at least a day apart). Each local setter asks for three to five
+ * offsets around one time value, and consecutive ones land on the same or
+ * neighbouring days, so most answers come from here instead of a
+ * localtime(3) call: glibc takes its zone lock in each and, for dates past
+ * the zone file's last transition, parses the zone's rule string again. A
+ * change of process.env.TZ starts a new generation. */
+#define SCR_DATE_MIDNIGHTS 64
+typedef struct {
+  long long day;
+  double offset;
+  bool valid;
+} ScrDateMidnight;
+typedef struct {
+  bool valid;
+  unsigned generation;
+  ScrDateMidnight entries[SCR_DATE_MIDNIGHTS];
+} ScrDateMidnightCache;
+static SCR_TL ScrDateMidnightCache scr_date_midnight_cache;
+
+static bool scr_date_midnight_offset(ScrDateMidnightCache *c, long long day, double *out) {
+  ScrDateMidnight *e = &c->entries[(unsigned long long)day % SCR_DATE_MIDNIGHTS];
+  if (e->valid && e->day == day) {
+    *out = e->offset;
+    return true;
+  }
+  if (!scr_date_offset_at_uncached((double)day * 86400000.0, out)) return false;
+  e->valid = true;
+  e->day = day;
+  e->offset = *out;
+  return true;
+}
+
+static bool scr_date_offset_at(double ms, double *out) {
+  ScrDateMidnightCache *c = &scr_date_midnight_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (!c->valid || c->generation != generation) {
+    memset(c, 0, sizeof *c);
+    c->valid = true;
+    c->generation = generation;
+  }
+  long long cms = (long long)ms;
+  long long day = cms / 86400000 - (cms % 86400000 < 0);
+  double start, end;
+  if (scr_date_midnight_offset(c, day, &start) && scr_date_midnight_offset(c, day + 1, &end) &&
+      start == end) {
+    *out = start;
+    return true;
+  }
+  return scr_date_offset_at_uncached(ms, out);
 }
 
 static volatile const double scr_date_day_ms = 86400000.0;
@@ -12761,8 +12927,15 @@ ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
   bool negative = value < 0;
   value = fabs(value);
   double integer = floor(value), fraction = value - integer;
-  double tolerance = 0.5 * (nextafter(value, INFINITY) - value);
-  if (tolerance <= 0) tolerance = nextafter(0, INFINITY);
+  /* The next double above the positive finite value: its bits plus one
+   * (Infinity above the largest double). */
+  uint64_t value_bits;
+  memcpy(&value_bits, &value, sizeof value_bits);
+  value_bits += 1;
+  double next;
+  memcpy(&next, &value_bits, sizeof next);
+  double tolerance = 0.5 * (next - value);
+  if (tolerance <= 0) tolerance = 0x1p-1074;
   if (fraction >= tolerance) {
     buffer[end++] = '.';
     do {

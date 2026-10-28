@@ -827,6 +827,19 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value) {
   return value->kind == SCR_DYN_PROMISE ? scr_await_dyn(value->v.promise) : scr_dyn_retain(value);
 }
 
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The same for a native stackless body: the suspension has taken the turn
+ * scr_await_dyn would take, so the extraction takes none. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
+  if (value->kind != SCR_DYN_PROMISE) return scr_dyn_retain(value);
+  ScrPromise *p = value->v.promise;
+  if (!scr_promise_settled_now(p))
+    scr_trap("scriptc: internal error: resumed before awaited promise settled\n");
+  if (scr_promise_is_rejected(p)) return NULL;
+  return scr_dyn_promise_payload(p);
+}
+
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
  * must imply the dynAsync link). Listeners are dyn functions; the
@@ -1538,8 +1551,11 @@ static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
   return NULL;
 }
 
-/* Resolves `target` with `value` (borrowed). */
-static void scr_dyn_resolve_value(ScrPromise *target, ScrDyn *value, const ScrDyn *reader) {
+/* Resolves `target` with `value` (borrowed). Inlined into both callers, so
+ * the code of scr_dyn_then_resolve_call does not depend on whether a
+ * program links scr_dyn_promise_resolve_with. */
+__attribute__((always_inline)) static inline void scr_dyn_resolve_value(ScrPromise *target, ScrDyn *value,
+                                                                const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) {
     scr_promise_resolve_dyn(target, scr_dyn_retain(value));
     return;
@@ -1654,6 +1670,10 @@ static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, con
 
 ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
   return scr_dyn_promise_entry(NULL, value, reader);
+}
+
+void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value) {
+  scr_dyn_resolve_value(target, value, NULL);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

@@ -13,6 +13,13 @@ Usage:
                                             exporting the profile symbols; a profile
                                             with a sidecar section also gets the
                                             contract sidecar JSON beside the archive
+  scriptc types patch <package> <selector> <type> [--range <r>] [--dry-run]
+                                            fix a wrong declaration of an installed
+                                            package: shows what the selector
+                                            matches and adds the type patch to
+                                            package.json ("| undefined" widens)
+  scriptc types list                        the project's type patches and what
+                                            they match
   scriptc cache warm [runtime|tls…] verify and load precompiled runtime families
                                             for the current compiler/SDK/target
   scriptc merge-profiles -o <out.profdata> [--sparse] <profile…>
@@ -31,13 +38,14 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
+      --fail-on <blockers|divergences|dynamic|dynamic-slots|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
                      divergences, likely-hot functions that use untyped
-                     values (SC6101), any Node island (eager-node-islands is
-                     the same until deferred evaluation lands), or a gap
-                     island (a package scriptc should compile but cannot yet)
+                     values (SC6101), dynamic slots (SC6104), any Node
+                     island (eager-node-islands is the same until deferred
+                     evaluation lands), or a gap island (a package scriptc
+                     should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -48,6 +56,11 @@ Options:
                      counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
+      --static       Linux: link the C library into the executable, which
+                     then starts without the dynamic loader. glibc builds
+                     need its static libraries (libc.a) on the build host
+                     and refuse executables that include host, user or
+                     group name lookups (opt in; --emit=exe only)
       --windows-subsystem <console|gui>
                      Windows executable subsystem (default: console). gui
                      prevents Windows from opening a console window
@@ -56,12 +69,28 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --libnode <dir|beside>
+                     the libnode pack that calls into Node.js (@scriptc/node)
+                     load at run time, or beside to copy it next to the
+                     executable (default: SCRIPTC_LIBNODE at build time;
+                     SCRIPTC_LIBNODE overrides it at run time)
+      --large-pages  Linux: at startup, move the executable's code onto 2 MiB
+                     transparent huge pages when the system allows them, for
+                     large programs. Takes about 3 ms per 10 MiB of code, and
+                     all of the moved code stays resident (opt in; --emit=exe
+                     only)
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
                      executable then requires that level: v3 adds AVX2, BMI2
                      and FMA, v4 adds AVX-512. native uses the build host's
                      level. The runtime keeps its baseline code
+      --cpu-dispatch x86-64: also compile the program's code for x86-64-v3
+                     (AVX2), and run that copy on CPUs that support it. The
+                     executable still runs on any x86-64 CPU. Not used with
+                     --target-cpu above baseline. The SCRIPTC_CPU_LEVEL
+                     environment variable (0 to 4, or a level name) caps the
+                     level at run time (opt in; --emit=exe only)
       --profile-generate <pattern>
                      Linux: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
@@ -73,8 +102,10 @@ Options:
                      code is laid out, inlined and split by how the profiled
                      runs used it. Code the profile does not describe, or
                      describes from an older version of the program, is
-                     optimized as without one (release or speed; --emit=exe
-                     only)
+                     optimized as without one. build prints how the profile
+                     matched on stderr, and warns when more than 10% of the
+                     functions it describes changed (release or speed;
+                     --emit=exe only)
       --keep-llvm    keep generated LLVM IR beside the executable (default)
       --no-keep-llvm delete generated LLVM IR after compiling
       --emit-ir      also write IR beside an executable or library archive;
@@ -89,6 +120,10 @@ Options:
                      "pkg..." also names every package pkg depends on).
                      Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --no-shape-overlay
+                     compile npm packages' JavaScript without the types shape
+                     inference proves (per package: "scriptc": {"packages":
+                     {"<name>": {"shapes": false}}} in package.json)
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -151,17 +186,24 @@ export const CLI_OPTIONS = {
   backend: { type: "string" },
   optimization: { type: "string" },
   strip: { type: "boolean", default: false },
+  static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  libnode: { type: "string" },
+  "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
+  "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },
   "profile-use": { type: "string" },
   sparse: { type: "boolean", default: false },
+  range: { type: "string" },
+  "dry-run": { type: "boolean", default: false },
   "keep-llvm": { type: "boolean", default: true },
   "emit-ir": { type: "boolean", default: false },
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  "shape-overlay": { type: "boolean" },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

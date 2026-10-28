@@ -100,6 +100,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   unionIsTag: { unionId: "other" },
   unionEq: { unionId: "other" },
   jsonStringify: { indent: "other" },
+  dynCheck: { inferredSite: "other" },
 };
 
 const STMT_FIELDS: Classified<IrStmt> = {
@@ -157,6 +158,8 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "classes[].errorNameAfter": "other",
   "classes[].prototypeDataHelper": "reference",
   "classes[].instancePrototypeHelper": "reference",
+  "classes[].arrayFields": "reference",
+  "classes[].arraySpecies": "reference",
   "classes[].stringTagHelper": "reference",
   "classes[].localCaptures[].name": "other",
   "classes[].localCaptures[].localId": "other",
@@ -221,7 +224,20 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].sha256": "other",
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
+  "foreignElementKeys[]": "other",
   "freezableArrays[]": "other",
+  "nodeIsland.libnode": "other",
+  "nodeIsland.nodeVersion": "other",
+  "nodeIsland.modules.root": "other",
+  "nodeIsland.modules.location": "other",
+  "nodeIsland.modules.files[].path": "other",
+  "nodeIsland.modules.files[].sha256": "other",
+  "nodeIsland.modules.links[].path": "other",
+  "nodeIsland.modules.links[].target": "other",
+  "sloppyDynWrites[]": "other",
+  "inferredFactFiles[].file": "other",
+  "inferredFactFiles[].pkg": "other",
+  "declOrigins[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -282,6 +298,14 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
   "classes[].instancePrototypeHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], instancePrototypeHelper: TARGET, loc }],
+  }),
+  "classes[].arrayFields": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Row", fields: [], arrayElem: F64, arrayFields: TARGET, loc }],
+  }),
+  "classes[].arraySpecies": () => ({
+    ...module(),
+    classes: [{ name: "%m0.Row", fields: [], arrayElem: F64, arraySpecies: TARGET, loc }],
   }),
   "classes[].stringTagHelper": () => ({
     ...module(),
