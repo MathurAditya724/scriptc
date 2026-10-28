@@ -279,7 +279,11 @@ import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
 import { lowerStringIteratorValue } from "./iterator-adapters.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
-import { maybePromiseReturnStmt, promiseArmedUnionOf } from "./maybe-promise.js";
+import {
+  maybePromiseReturnStmt,
+  promiseArmedUnionOf,
+  promiseOrUnitUnionOf,
+} from "./maybe-promise.js";
 import {
   requireObjLitGenericReceiver,
   objLitGenericFnNodeOf,
@@ -5998,9 +6002,19 @@ export function lowerPromiseMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  if (lowerer.chainBlocked(access, call)) return null;
   const member = access.name.text;
   if (member !== "then" && member !== "catch" && member !== "finally") return null;
+  // A call that ENDS an optional chain (`refreshing?.catch(h)`,
+  // `client?.close().catch(h)`) checker-types as the chain's
+  // undefined-armed union while the body this lowering builds is the
+  // promise arm — `finishOptionalChain` wraps it back into the union.
+  // Take the arm so the handler typing sees the promise it handles.
+  const callResultType = (): IrType | undefined => {
+    const t = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!t || t.kind === "promise") return t ?? undefined;
+    return promiseOrUnitUnionOf(lowerer, t)?.promise ?? t;
+  };
   let recvT =
     lowerer.mapTypeOf(lowerer.typeOf(access.expression)) ??
     dynFallbackType(lowerer, access.expression, lowerer.typeOf(access.expression));
@@ -6117,7 +6131,7 @@ export function lowerPromiseMethodCall(
       const rejectedNode = call.arguments.nodes[1]!;
       const fulfilledAbsent = isAbsentHandler(fulfilledNode);
       const rejectedAbsent = isAbsentHandler(rejectedNode);
-      const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      const resultT = callResultType();
       // An untyped call in JavaScript whose receiver arrived as a typed
       // promise (a function instantiated with one): Promise.prototype.then
       // over the promise as a checked-dynamic value, which shares its
@@ -6516,7 +6530,7 @@ export function lowerPromiseMethodCall(
         `then handlers whose parameter is not the settled value's type (expected '${lowerer.fmt(inner)}', got '${lowerer.fmt(param)}')`,
       );
     }
-    let resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    let resultT = callResultType();
     // JavaScript whose declared result type has no mapping (zod's
     // `Promise.all(items).then((r) => ParseStatus.mergeArray(status, r))`,
     // typed by a .d.ts union): the handler's value settles the promise as
@@ -6864,7 +6878,7 @@ export function lowerPromiseMethodCall(
         "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
     );
   }
-  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const resultT = callResultType();
   if (resultT?.kind !== "promise") {
     lowerer.noLowering(
       "catch with this handler's result type",
@@ -6908,7 +6922,10 @@ export function lowerPromiseMethodCall(
       if (ts.isBlock(hb)) {
         catchBody = lowerer.lowerStmts(hb.statements.nodes);
       } else if (R.kind === "void") {
-        catchBody = [{ kind: "exprStmt", expr: lowerer.lowerExpr(hb), loc: locOf(hb) }];
+        // The handler's value is discarded, so the body lowers as a
+        // statement: `() => undefined` is a pure no-op (a bare unit
+        // literal has no IR value), not an expression to evaluate.
+        catchBody = [lowerer.lowerExprStatement(hb)];
       } else {
         // Bare-expression handler: `(e) => v` (promise results flatten
         // through the async-return path, like any `return v`).
