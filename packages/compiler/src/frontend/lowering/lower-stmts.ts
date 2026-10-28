@@ -258,7 +258,7 @@ import {
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { lowerUnionFieldWrite } from "./expressions/union-fields.js";
+import { lowerUnionFieldDelete, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
   checkerPanicDiag,
@@ -7710,6 +7710,14 @@ function lowerDeleteStatement(lowerer: Lowerer, expr: ts.DeleteExpression): IrSt
       expr: { kind: "libCall", fn: "process.envUnset", args: [lowerKey()], type: VOID, loc },
       loc,
     };
+  }
+  // `delete u.f` on a union of records that every arm declares `f` optional
+  // on: dispatch over the arms and write each slot's ABSENT state (the
+  // monomorphic optional-field delete). Required fields, class arms and
+  // other receivers keep their own fences below.
+  if (ts.isPropertyAccessExpression(target)) {
+    const unionDelete = lowerUnionFieldDelete(lowerer, target);
+    if (unionDelete) return unionDelete;
   }
   let obj = lowerer.lowerExpr(target.expression);
   // `delete this.stack` in an Error subclass that declares a `stack`
