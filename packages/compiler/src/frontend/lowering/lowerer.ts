@@ -1478,7 +1478,10 @@ function lowerToIrWithIslands(
   }
   // Divergence warnings over the program's own modules: computed once,
   // after lowering, from the same checker (never part of a failure).
-  const divergences = scanDivergences(resultLowerer, moduleOrder);
+  const divergences = [
+    ...scanDivergences(resultLowerer, moduleOrder),
+    ...resultLowerer.sharedModuleWarnings,
+  ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
   // The performance warning (SC6101): likely-hot functions of the program
@@ -3641,6 +3644,11 @@ export class Lowerer {
   }[] = [];
   /** Each island module load's path literal, set to its tree path when lowering ends. */
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
+  /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
+   * their SC8020 warnings, and the TDZ flags their declarations set. */
+  sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
+  readonly sharedModuleWarnings: ScrDiagnostic[] = [];
+  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -4120,6 +4128,10 @@ export class Lowerer {
       setTable("freezableArrays", this.freezableArrays),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
+      // The shared-module plan runs inside the first unit that lowers a
+      // module; a warning it adds is a diagnostic of that unit, so its count
+      // is journaled like `diags` (the plan itself is unjournaled).
+      checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -4395,6 +4407,11 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // The modules shared with the islands (NI-6): a pure function of the
+    // program's modules, computed once, and the TDZ flags its plan gives a
+    // statement.
+    "sharedModules",
+    "sharedInitFlags",
     "slotOriginMemo",
     "recordOriginMemo",
     "boundaryCastOrder",

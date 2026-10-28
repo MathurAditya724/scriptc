@@ -1037,7 +1037,9 @@ export function isRefCounted(t: IrType): boolean {
  * Only the relative paths enter an executable. */
 export interface IrNodeIslandModules {
   root: string;
-  files: { path: string; size: number; sha256: string }[];
+  /** `placeholder`: a program module the islands share, shipped as
+   * providedModulePlaceholder (node-islands/modules.ts), not its source. */
+  files: { path: string; size: number; sha256: string; placeholder?: true }[];
   links: { path: string; target: string }[];
   /** Where the executable finds the tree: absent when it carries the tree
    * itself, else a `$ORIGIN/` path (`--libnode=beside`). */

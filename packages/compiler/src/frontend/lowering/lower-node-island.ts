@@ -336,6 +336,16 @@ function islandLoadPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   return literal;
 }
 
+/** The path literal of a module the program shares with its islands
+ * (lower-shared-modules.ts), named by its path in the shipped tree like a
+ * load's. */
+export function islandSharedPath(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
+  const literal: IrExpr & { kind: "strLit" } = { kind: "strLit", value: path, type: STRING, loc };
+  lowerer.nodeIslandModules.addProvided(path);
+  lowerer.nodeIslandLoads.push({ literal, path });
+  return literal;
+}
+
 function loadIslandModule(lowerer: Lowerer, path: string, loc: SrcLoc): IrExpr {
   return {
     kind: "libCall",
@@ -680,8 +690,27 @@ function withClassMethods(
   className: string,
   blame: ts.Node,
 ): IrExpr {
+  const builder = classMethodsBuilderOf(lowerer, className, blame, value.loc);
+  if (builder === null) return value;
+  return {
+    kind: "libCall",
+    fn: "nodeIsland.classMethods",
+    args: [value, builder],
+    type: DYN,
+    loc: value.loc,
+  };
+}
+
+/** The builder of a class's method table (a dyn closure answering
+ * {name: unbound method value}), or null for a class without methods. */
+function classMethodsBuilderOf(
+  lowerer: Lowerer,
+  className: string,
+  blame: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
   const info = lowerer.classes.get(className);
-  if (info === undefined || info.def.runtime) return value;
+  if (info === undefined || info.def.runtime) return null;
   const names: string[] = [];
   for (
     let c: typeof info | undefined = info;
@@ -691,8 +720,7 @@ function withClassMethods(
     for (const m of c.def.methods ?? [])
       if (!names.includes(m) && islandMethodName(m)) names.push(m);
   }
-  if (names.length === 0) return value;
-  const loc = value.loc;
+  if (names.length === 0) return null;
   const builder = `%island.methods:${className}`;
   if (!lowerer.classMethodValueHelpers.has(builder)) {
     lowerer.classMethodValueHelpers.add(builder);
@@ -721,13 +749,75 @@ function withClassMethods(
     type: funcTypeFromParamShapes([], DYN),
     loc,
   };
-  return {
-    kind: "libCall",
-    fn: "nodeIsland.classMethods",
-    args: [value, lowerer.coerceToExpected(closure, DYN)],
-    type: DYN,
+  return lowerer.coerceToExpected(closure, DYN);
+}
+
+/** NI-6: the method-table builder of the class a shared module exports
+ * (`ident` is its declaration's name), or null. */
+export function classMethodsBuilder(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
+  return classMethodsBuilderOf(lowerer, lowerer.classNamer(decl), ident, loc);
+}
+
+/** NI-6: `new C(...)` from island code for the class a shared module
+ * exports: a function with the constructor's parameters (its dyn thunk
+ * checks the island's arguments) that constructs an instance, as a dyn
+ * closure, or null when the constructor's shape is not a plain list of
+ * parameters (the island's `new` then throws). */
+export function classConstructHelper(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+  loc: SrcLoc,
+): IrExpr | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
+  const className = lowerer.classNamer(decl);
+  const info = lowerer.classes.get(className);
+  if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
+  for (let c: typeof info | null = info; c; c = c.base) if (c.def.baseValueGlobal) return null;
+  if (lowerer.inheritsBuiltinErrorCtor(info)) return null;
+  const shapes = info.ctorParams;
+  if (shapes.some((s) => s.mode !== "required" && s.mode !== "omittable")) return null;
+  const name = `%island.new:${className}`;
+  if (!lowerer.classMethodValueHelpers.has(name)) {
+    lowerer.classMethodValueHelpers.add(name);
+    lowerer.noteEdge(`%${className}.constructor`);
+    const params = shapes.map((s, i) => ({ localId: `p${i}`, name: `p${i}`, type: s.type }));
+    const objectType: IrType = { kind: "object", className };
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: objectType,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "new",
+            className,
+            args: params.map((p) => varRef(p.localId, p.type, loc)),
+            type: objectType,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  const closure: IrExpr = {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    type: funcTypeFromParamShapes(shapes, { kind: "object", className }),
     loc,
   };
+  return lowerer.coerceToExpected(closure, DYN);
 }
 
 /** Native values NI-5 exports into the island by reference: functions,
