@@ -254,11 +254,7 @@ function fixturePaths(out: Buffer): Buffer {
   return Buffer.from(out.toString("utf8").replace(tree, join(fixturesRoot, "npm")), "utf8");
 }
 
-async function expectMatchesNode(
-  c: NpmCase,
-  binary: string,
-  islandFrames = false,
-): Promise<void> {
+async function expectMatchesNode(c: NpmCase, binary: string, islandFrames = false): Promise<void> {
   const cwd = dirname(c.entry);
   for (const argv of c.argvs ?? [[]]) {
     const [nodeRes, ran] = await Promise.all([
