@@ -1,14 +1,17 @@
-/* The child unit's private layout.
+/* The child unit's private layout, for the gated lifecycle unit.
  *
  * scr_child.c owns the implementation and every entry point the compiled
- * programs call. The gated scr_child_lifecycle.c unit (a later addition's
- * listener removal and signalCode) reads the same registries, so the
- * layout lives here instead of in the .c. This is not a public surface:
- * nothing outside the child units includes it, and the struct stays
- * opaque (scr_child.h's typedef) to everything else.
+ * programs call; its `ScrChild`, state and entry types stay defined there,
+ * unchanged, because that unit is always linked and its object must not
+ * move. The gated scr_child_lifecycle.c unit (listener removal and
+ * signalCode) reads the same registries, so it repeats the layout here.
+ * This is not a public surface: nothing outside the child units includes
+ * it, and the struct stays opaque (scr_child.h's typedef) to everything
+ * else.
  *
- * Each platform arm below is the definition its unit arm used verbatim;
- * a field's position is load-bearing for both units at once. */
+ * Each platform arm below must stay field-for-field identical to the
+ * definition in scr_child.c's matching arm; a field's position is
+ * load-bearing for both units at once. */
 #ifndef SCR_CHILD_PRIVATE_H
 #define SCR_CHILD_PRIVATE_H
 

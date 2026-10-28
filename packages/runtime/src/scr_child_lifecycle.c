@@ -27,7 +27,23 @@ ScrStr *scr_child_signal_code(ScrChild *c) {
  * argument is BORROWED — compared, never retained; a value the registry
  * does not hold (a fresh inline arrow, an adapter closure) removes
  * nothing, exactly Node's answer. Removing does not change what the loop
- * watches: a child with no listeners is still reaped. */
+ * watches: a child with no listeners is still reaped.
+ *
+ * Emit snapshot: Node copies a listener array when the event is emitted,
+ * so a listener that removes a SIBLING from inside the emit must not cut
+ * the in-flight event short — the removed listener still runs for it.
+ * scr_child.c's dispatch loops walk the live registry, so a removal in
+ * that window may not shift or free an entry. The unit marks the window
+ * before it iterates and never runs user code in between: `settled` for
+ * 'exit' and 'error' (base sets it immediately before the terminal
+ * branch, after the stream drain) and `close_done` for 'close' (set at
+ * the top of the close emit). A removal there is a no-op and the
+ * emitter's own drop releases the entry; the listener was registered
+ * before the emit, so delivering it is exactly the snapshot's answer.
+ * Outside it no emit of that event is in flight (it is either still to
+ * come or already over and the array freed), so removal in place is safe
+ * and Node-exact. The 'spawn' emit detaches its array before invoking its
+ * listeners, so removal during it already finds an empty registry. */
 void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
   for (size_t i = c->n_spawn; i > 0; i--) {
     if (c->spawn_cbs[i - 1] != cb) continue;
@@ -39,6 +55,7 @@ void scr_child_off_spawn(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
+  if (c->settled) return; /* the 'exit' emit is in flight (or done) */
   for (size_t i = c->n_exit; i > 0; i--) {
     if (c->exit_cbs[i - 1].cb != cb) continue;
     scr_closure_release(c->exit_cbs[i - 1].cb);
@@ -49,6 +66,7 @@ void scr_child_off_exit(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
+  if (c->close_done) return; /* the 'close' emit is in flight (or done) */
   for (size_t i = c->n_close; i > 0; i--) {
     if (c->close_cbs[i - 1].cb != cb) continue;
     scr_closure_release(c->close_cbs[i - 1].cb);
@@ -59,6 +77,7 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb) {
 }
 
 void scr_child_off_error(ScrChild *c, ScrClosure *cb) {
+  if (c->settled) return; /* the 'error' emit is in flight (or done) */
   for (size_t i = c->n_err; i > 0; i--) {
     if (c->err_cbs[i - 1].cb != cb) continue;
     scr_closure_release(c->err_cbs[i - 1].cb);
