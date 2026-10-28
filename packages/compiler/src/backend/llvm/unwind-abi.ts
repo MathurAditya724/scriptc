@@ -276,7 +276,7 @@ export const UNWIND_RESUME_DECLARATION = "declare void @scr_unwind_resume(ptr) c
 export const UNWIND_PERSONALITY = "personality ptr @__gcc_personality_v0";
 
 /** An unwind leaving the function: a raise, or a landing pad's resume. */
-const UNWINDS = /call void @scr_unwind_(?:raise\(\)|resume\()/;
+const UNWINDS = /call void @scr_unwind_raise\(\)|call void @scr_unwind_resume\(/;
 /** A pending-flag test: the thread's exception word, the active cell, or the runtime query. */
 const PENDING_TEST = /@scr_exc_flag\b|%exc\.cell\b|@scr_exc_active\b|@scr_exc_pending\(/;
 
