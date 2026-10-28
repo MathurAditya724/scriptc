@@ -7,8 +7,10 @@
  * (`%dyn.class.call.N`) that calls such a method already holds a capsule
  * of the same instance at its exact class: its receiver after
  * normalization. The helper now calls a copy of the method that returns
- * nothing and answers its own receiver, so the call boxes nothing. Other
- * callers (vtables, typed code, method values) keep the method itself. */
+ * nothing and answers its own receiver, so the call boxes nothing. A
+ * direct call whose result nothing reads calls the copy too. Other callers
+ * (vtables, method values, calls that use the result) keep the method
+ * itself. */
 import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
 import { VOID } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
@@ -56,6 +58,20 @@ export function returnDispatchReceivers(lowerer: Lowerer, functions: IrFunction[
         { kind: "return", value: varRef(receiver, only.value.type, only.loc), loc: only.loc },
       ];
     }
+  }
+  // A direct call whose result nothing reads (`builder.set(1);` in typed
+  // code) needs no capsule at all.
+  for (const fn of [...functions]) {
+    everyStmtList(fn.body, {
+      stmt: (s) => {
+        if (s.kind === "exprStmt" && s.expr.kind === "call") {
+          const copy = copyOf(s.expr.callee);
+          if (copy) s.expr = { ...s.expr, callee: copy.name, type: VOID };
+        }
+        return true;
+      },
+      expr: () => true,
+    });
   }
 }
 
