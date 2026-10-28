@@ -16,7 +16,9 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  canDynCheckTo,
   isSupportedArrayElem,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -557,7 +559,12 @@ export function lowerArrayLiteral(
           type.elem.kind === "f64" ||
           type.elem.kind === "string" ||
           type.elem.kind === "bool" ||
-          searchParamsSource)
+          searchParamsSource ||
+          canDynCheckTo(
+            type.elem,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ))
       ) {
         src = lowerer.coerceInto(
           el.expression,
@@ -578,6 +585,29 @@ export function lowerArrayLiteral(
       ) {
         const w = lowerer.widthCoerce(src, type);
         if (w) src = w;
+      }
+      // `[...maybe]` over a source the checker typed WIDER than the
+      // iterable it holds at run time: `hex[1]` under indexed-access
+      // strictness (`string | undefined`), an optional array local. Node
+      // spreads whatever iterator the value has and throws the
+      // not-iterable TypeError for null/undefined, so drain through the
+      // checked iterator walk (the same walk the dyn source above uses)
+      // and validate each element into the literal's slot.
+      if (
+        !typeEquals(src.type, type) &&
+        widenedIterableType(lowerer, src.type) &&
+        canDynCheckTo(
+          type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        const dynSrc = lowerer.coerceInto(el.expression, src, DYN);
+        src = lowerer.coerceInto(
+          el.expression,
+          checkedIteratorPack(lowerer, dynSrc, notIterableSpelling(el.expression), locOf(el)),
+          type,
+        );
       }
       if (!typeEquals(src.type, type)) {
         lowerer.unsupported(
@@ -810,13 +840,34 @@ function lowerTupleSpreadLiteral(
   return { kind: "seqExpr", stmts, result: { kind: "recordLit", fields, type, loc }, type, loc };
 }
 
+/** A spread source whose static type is wider than the iterable it holds
+ * at run time: a union of ONE iterable arm with unit arms (`string |
+ * undefined` from an indexed read under indexed-access strictness, an
+ * optional array local). The literal cannot copy elements off it
+ * statically; the runtime value still spreads like Node's. */
+export function widenedIterableType(lowerer: Lowerer, t: IrType): boolean {
+  const iterable = (x: IrType): boolean =>
+    x.kind === "array" || x.kind === "string" || x.kind === "generator" || x.kind === "bytes";
+  if (t.kind !== "union") return false;
+  const arms = lowerer.unions.get(t.unionId)?.arms ?? [];
+  return (
+    arms.filter((arm) => iterable(arm)).length === 1 &&
+    arms.every((arm) => iterable(arm) || isUnitType(arm))
+  );
+}
+
 /** Drain a checked-dynamic iterable: `next` is read once when the iterator
  * opens, as JS keeps it in the iterator record, so a `next` the iterator
  * assigns while it runs is not called. Runtime iterators step natively, and
  * other iterators call the `next` read (class methods keep their emitted
  * dispatch). `spell` is the TypeError message for a source that is not
  * iterable (notIterableSpelling). */
-function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, loc: SrcLoc): IrExpr {
+export function checkedIteratorPack(
+  lowerer: Lowerer,
+  source: IrExpr,
+  spell: string,
+  loc: SrcLoc,
+): IrExpr {
   const name = "%iterator.pack.checked";
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });
