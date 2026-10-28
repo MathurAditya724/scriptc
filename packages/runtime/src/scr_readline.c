@@ -105,7 +105,9 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
   RlList *l = &rl->ev[ev];
   size_t n = l->n;
   if (n == 0) return;
-  RlEntry *snap = malloc(n * sizeof *snap);
+  /* Most events have a listener or two: their snapshot stays on the stack. */
+  RlEntry small[4];
+  RlEntry *snap = n <= 4 ? small : malloc(n * sizeof *snap);
   if (!snap) scr_rl_oom();
   memcpy(snap, l->v, n * sizeof *snap);
   for (size_t i = 0; i < n; i++) {
@@ -139,7 +141,7 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
     }
     if (!e.iter) scr_closure_release(e.cb);
   }
-  free(snap);
+  if (snap != small) free(snap);
 }
 
 ScrArr *scr_rl_history_of(ScrRl *rl) {
