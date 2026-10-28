@@ -2376,7 +2376,9 @@ static void scr_http_proto_sweep(void) {
     }
     case SCR_HTTP_EMIT_REQ_ABORTED: {
       ScrHttpReq *req = (ScrHttpReq *)e.h;
-      if (!req->close_emitted) {
+      /* Node's IncomingMessage reports its destroy error only to 'error'
+       * listeners: without one, 'aborted' and 'close' alone report it. */
+      if (!req->close_emitted && req->err_ls.n != 0) {
         ScrStr *msg = scr_str_new("aborted", 7);
         scr_net_fire_err_this(&req->err_ls, msg, req, SCR_DYNH_HTTP_REQ);
         scr_str_release(msg);
