@@ -986,7 +986,9 @@ struct ScrHttpRes {
   char *cork_buf;
   size_t cork_len, cork_cap;
   /* A write while corked commits the head (headersSent, Node's implicit
-   * header) and holds its bytes here until the flush sends them first. */
+   * header) and holds its bytes here until the flush sends them first;
+   * writeHead holds them here until the first write(), end() or
+   * flushHeaders(). */
   char *held_head;
   size_t held_head_len, held_head_cap;
   /* res.req: the paired request (+1; req never points back — no cycle).
@@ -1891,6 +1893,14 @@ void scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
 /* res.flushHeaders(): the head goes out NOW (streaming framing — chunked
  * unless the user fixed the length; the h2 lane's HEADERS frame). */
 void scr_http_res_flush_headers(ScrHttpRes *r) {
+  if (r->held_head_len > 0 && r->corked == 0 && !r->finished) {
+    ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
+    r->held_head = NULL;
+    r->held_head_len = r->held_head_cap = 0;
+    if (r->sock) scr_net_sock_write_native(r->sock, head.data, head.len);
+    free(head.data);
+    return;
+  }
   if (!r->head_sent && !r->finished) scr_http_res_send_head(r, -1);
 }
 
@@ -1966,7 +1976,7 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     return;
   }
   if (r->strict_content_length) r->strict_bytes_written += len;
-  if (r->corked > 0 || r->cork_len > 0 || r->held_head_len > 0) {
+  if (r->corked > 0 || r->cork_len > 0) {
     /* end() flushes every cork level (Node) — the body streamed, so the
      * framing below takes the already-committed streaming path. A corked
      * chunked message buffers end()'s chunk too: one chunk goes out. */
@@ -1996,7 +2006,12 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     free(head.data);
     if (scr_exc_pending()) return;
   } else {
-    scr_http_res_emit(r, NULL, data, len, r->chunked);
+    /* a head writeHead stored leaves with end()'s data */
+    ScrHttpBuf head = {r->held_head, r->held_head_len, r->held_head_cap};
+    r->held_head = NULL;
+    r->held_head_len = r->held_head_cap = 0;
+    scr_http_res_emit(r, head.len > 0 ? &head : NULL, data, len, r->chunked);
+    free(head.data);
   }
   if (scr_http_res_expected_length(r, &expected) &&
       (double)r->strict_bytes_written != expected) {
@@ -2025,7 +2040,19 @@ void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
 void scr_http_res_write_head(ScrHttpRes *r, double status) {
   if (r->head_sent) return;
   r->status = (int)status;
-  scr_http_res_send_head(r, -1); /* Node: an explicit writeHead means chunked unless CL was set */
+  if (r->h2_stream != NULL || scr_http_res_has_header(r, "expect")) {
+    scr_http_res_send_head(r, -1); /* Node: an explicit writeHead means chunked unless CL was set */
+    return;
+  }
+  /* Node's writeHead stores the head (_storeHeader) and the first write(),
+   * end() or flushHeaders() sends it, with that write's data in one
+   * socket write; an Expect header sends it at once. Chunked unless the
+   * user set Content-Length. */
+  ScrHttpBuf held = {NULL, 0, 0};
+  if (!scr_http_res_build_head(r, -1, &held)) return;
+  r->held_head = held.data;
+  r->held_head_len = held.len;
+  r->held_head_cap = held.cap;
 }
 
 /* writeHead(status, { ...literal headers... }): the packed form — names
