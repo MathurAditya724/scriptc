@@ -189,8 +189,17 @@ const match = useProfile && "artifact" in result ? result.artifact.profileMatch 
 if (match !== undefined) {
   const profiled = match.annotated + match.mismatched;
   const share = profiled === 0 ? 0 : match.annotated / profiled;
+  // The same by the profile's counters: a changed hot function loses more
+  // of the profile's gain than a changed cold one.
+  const counts =
+    match.annotatedCounts === undefined || match.mismatchedCounts === undefined
+      ? 0
+      : match.annotatedCounts + match.mismatchedCounts;
   console.log(
     `native compiler profile: ${match.annotated} of ${profiled} profiled functions match (${(100 * share).toFixed(1)}%); ${match.missing} functions have no profile` +
+      (counts > 0
+        ? `; changed functions hold ${((100 * match.mismatchedCounts!) / counts).toFixed(1)}% of its counts`
+        : "") +
       (match.recovered > 0
         ? `; ${match.recovered} functions annotated from the profile's block counts`
         : "") +

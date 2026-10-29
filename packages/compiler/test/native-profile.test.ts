@@ -426,6 +426,27 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       expect(await run(await link(dir, objects, "edited"), 2)).toBe(expectedExit(2, 7));
     });
 
+    test("the match report weighs the functions that changed by their counts", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-weights-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, program(), 1, "train");
+      // f4 gained a branch, so the profile no longer describes it.
+      const edited = program(0, true);
+      const { outputs, stdout } = await emitReporting(dir, edited, {
+        outputs: 1,
+        name: "edited",
+        use: profile,
+      });
+      expect(await run(await link(dir, outputs, "edited"), 2)).toBe(expectedExit(2));
+      const { profile: match } = JSON.parse(stdout.trim().split("\n").at(-1)!) as {
+        profile: Record<string, number>;
+      };
+      expect(match["mismatched"]).toBe(1);
+      // main and the other f<index> keep their counts; f4's are reported apart.
+      expect(match["mismatched_counts"]).toBeGreaterThan(0);
+      expect(match["annotated_counts"]).toBeGreaterThan(match["mismatched_counts"]!);
+    });
+
     test("the match report counts annotated functions that inlining removes", async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-match-"));
       dirs.push(dir);
@@ -438,7 +459,11 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       expect(await run(await link(dir, outputs, "guided"), 2)).toBe(inlinedExit(2));
       // Every g<index> and main received counts, though optimization then
       // inlined the helpers into main and deleted them.
-      expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+      const report = JSON.parse(stdout.trim().split("\n").at(-1)!) as {
+        ok: boolean;
+        profile: Record<string, number>;
+      };
+      expect(report).toMatchObject({
         ok: true,
         profile: {
           annotated: INLINED + 1,
@@ -446,8 +471,10 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
           missing: 0,
           recovered: 0,
           unknown_partitions: 0,
+          mismatched_counts: 0,
         },
       });
+      expect(report.profile["annotated_counts"]).toBeGreaterThan(0);
       const symbols = await execFileAsync("nm", [outputs[0]!]);
       expect(symbols.stdout).not.toMatch(/\bg\d\b/);
     });
