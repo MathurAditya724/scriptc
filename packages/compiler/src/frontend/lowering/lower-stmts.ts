@@ -12983,7 +12983,61 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       receiver = lowerer.coerceToExpected(receiver, DYN);
     }
   }
+  return lowerForInReceiver(lowerer, stmt, labels, receiver);
+}
+
+/** for-in over the lowered `receiver` of `stmt`. */
+function lowerForInReceiver(
+  lowerer: Lowerer,
+  stmt: ts.ForInStatement,
+  labels: string[] | undefined,
+  receiver: IrExpr,
+): IrStmt {
+  const loc = locOf(stmt);
   const recvT = receiver.type;
+  // A receiver that may be null or undefined: for-in visits nothing for
+  // either, and walks a present value as its own type. The receiver is
+  // evaluated once.
+  if (recvT.kind === "union") {
+    const arms = lowerer.unions.get(recvT.unionId)?.arms ?? [];
+    const present = arms.filter((arm) => arm.kind !== "undefinedT" && arm.kind !== "nullT");
+    if (present.length === 1 && present.length < arms.length) {
+      const arm = present[0]!;
+      const tag = lowerer.armTag(recvT.unionId, arm);
+      const recv = lowerer.declareHiddenLocal("%innullable", recvT);
+      const ref = varRef(recv.id, recvT, loc);
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId: recvT.unionId,
+        tag,
+        value: ref,
+        type: arm,
+        loc,
+      };
+      return {
+        kind: "block",
+        body: [
+          { kind: "varDecl", localId: recv.id, init: receiver, loc },
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: recvT.unionId,
+              tag,
+              negated: false,
+              value: ref,
+              type: BOOL,
+              loc,
+            },
+            then: [lowerForInReceiver(lowerer, stmt, labels, narrowed)],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      };
+    }
+  }
   if (recvT.kind === "dyn") {
     const recv = lowerer.declareHiddenLocal("%indyn", DYN);
     const ref: IrExpr = { kind: "varRef", localId: recv.id, type: DYN, loc };
