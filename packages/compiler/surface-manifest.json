@@ -5039,17 +5039,15 @@
       "id": "stdlib.readable-stream.pipeThrough",
       "kind": "stdlib",
       "name": "ReadableStream.pipeThrough",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; the wider Web Streams graph is outside the native readable-stream slice"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.pipeTo",
       "kind": "stdlib",
       "name": "ReadableStream.pipeTo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.symbol.asyncIterator",
@@ -5063,9 +5061,8 @@
       "id": "stdlib.readable-stream.tee",
       "kind": "stdlib",
       "name": "ReadableStream.tee",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.values",
