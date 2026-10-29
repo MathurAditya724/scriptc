@@ -120,6 +120,9 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  /** ChildProcess listener removal and signalCode: compiles
+   * scr_child_lifecycle.c. */
+  childLifecycle?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */

@@ -16,6 +16,7 @@ import {
   VOID,
   canBoxFuncIntoDyn,
 } from "../../../ir/ir.js";
+import { type IrLibFn } from "../../../ir/builtin-signatures.js";
 import {
   ipcJsonMessage,
   ipcSendCallback,
@@ -23,6 +24,7 @@ import {
   ipcDisconnectListener,
 } from "./ipc.js";
 import { stripTypeCasts } from "./arguments.js";
+import { resultIsDiscarded } from "../call-position.js";
 
 export function lowerChildMethodCall(
   lowerer: Lowerer,
@@ -286,6 +288,51 @@ export function lowerChildMethodCall(
       type: VOID,
       loc,
     });
+  }
+  // child.off(event, listener) / child.removeListener(event, listener) —
+  // EventEmitter's alias pair, removal by FUNCTION IDENTITY (the same
+  // closure value that was registered; the runtime compares pointers and
+  // releases the entry it drops). The events the registry can remove are
+  // the ones it stores statically; a listener registered through the
+  // checked-dynamic adapter is not removable by identity here and keeps
+  // its explicit refusal.
+  if ((name === "off" || name === "removeListener") && call.arguments.nodes.length === 2) {
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const fn: IrLibFn | undefined =
+      event === "spawn"
+        ? "child.offSpawn"
+        : event === "exit"
+          ? "child.offExit"
+          : event === "close"
+            ? "child.offClose"
+            : event === "error"
+              ? "child.offError"
+              : undefined;
+    if (fn === undefined) {
+      lowerer.noLowering(
+        `child.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        call.arguments.nodes[0]!,
+        '"spawn", "exit", "close", and "error" are the removable child events (as literals)',
+      );
+    }
+    if (!resultIsDiscarded(call)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `using the result of child.${name}() (call it as its own statement)`,
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const listener = lowerer.lowerExpr(call.arguments.nodes[1]!);
+    if (listener.type.kind !== "func") {
+      lowerer.noLowering(
+        `child.${name} with a '${lowerer.fmt(listener.type)}' listener`,
+        call.arguments.nodes[1]!,
+        "pass the function value that was registered (removal is by identity)",
+      );
+    }
+    return { kind: "libCall", fn, args: [receiver, listener], type: VOID, loc };
   }
   // child.kill(signal?) — Node's semantics exactly: the name resolves
   // through Node's signal table (unknown names throw the ERR_UNKNOWN_SIGNAL

@@ -291,10 +291,22 @@ function partitionGroupLines(functions: readonly IrFunction[]): string[] {
 /** Ends the group of the definitions that follow. */
 const PARTITION_GROUP_END = "; scriptc-group";
 
+/** Written before the entry module's top-level code (its `%init.<n>`). The
+ * LLVM helper gives that function and the chain that follows it a partition
+ * of their own, so an edit of the program's top level recompiles only that
+ * code (native/llvm-codegen/src/partition.cpp). */
+const PARTITION_ENTRY_LINE = "; scriptc-entry";
+
+/** Whether each function is the entry module's top-level code. */
+function partitionEntries(functions: readonly IrFunction[], sourceFile: string): boolean[] {
+  return functions.map((fn) => fn.name.startsWith("%init.") && fn.loc.file === sourceFile);
+}
+
 /** Writes the generated helpers, then the function definitions with their
- * group lines. With a layout, the definitions it lists, helpers included,
- * move after the unlisted helpers and before the other functions, by tier,
- * each in its tier's group (`layout-<tier>`). The helper compiles each
+ * group lines, and the entry line before the entry module's top-level code.
+ * With a layout, the definitions it lists, helpers included, move after the
+ * unlisted helpers and before the other functions, by tier, each in its
+ * tier's group (`layout-<tier>`). The helper compiles each
  * partition's definitions in text order, so listed ones come first in their
  * partitions, and it places a group's definitions in the same partitions.
  * Everything else keeps its order and its source-file group. */
@@ -304,6 +316,7 @@ function writeDefinitions(
   helperTexts: readonly (readonly string[])[],
   fnDefs: readonly string[],
   groups: readonly string[],
+  entries: readonly boolean[],
 ): void {
   const tierLine = (tier: number) => `${PARTITION_GROUP_END} layout-${tier}`;
   const listed = new Map<number, string[]>();
@@ -336,12 +349,13 @@ function writeDefinitions(
   fnDefs.forEach((text, i) => {
     const tier = layout === undefined || layout.size === 0 ? undefined : layoutTierOf(layout, text);
     if (tier === undefined) unlisted.push(i);
-    else listIn(tier, ["", tierLine(tier), text]);
+    else listIn(tier, ["", ...(entries[i] ? [PARTITION_ENTRY_LINE] : []), tierLine(tier), text]);
   });
   for (const tier of [...listed.keys()].sort((a, b) => a - b))
     for (const line of listed.get(tier)!) out.push(line);
   for (const [k, i] of unlisted.entries()) {
     if (k > 0 || listed.size > 0) out.push("");
+    if (entries[i]) out.push(PARTITION_ENTRY_LINE);
     out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
   }
 }
@@ -603,14 +617,16 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const globalReleases = exitReleaseLines("g");
   const asyncEntry = emitter.fnByName.get(emitter.mod.entry)?.async === true;
   const entryMayThrow = emitter.mayThrow.has(emitter.mod.entry);
-  // The event loop runs when timers appeared OR any async/generator
-  // function exists (the C main's hasAsync || hasGenerators ||
-  // usesTimers gate). Generator programs run
+  // The event loop runs when timers appeared, a promise is made (the loop's
+  // end reports an unhandled rejection, Node's exit 1), OR any
+  // async/generator function exists (the C main's hasAsync ||
+  // hasGenerators || usesTimers gate). Generator programs run
   // the loop too: its exit accounting notes still-suspended generator
   // fibers as abandoned, so the RC audit downgrades exactly like the
   // async loop-exhaustion story.
   const runsLoop =
     emitter.usesTimers ||
+    emitter.usesPromises ||
     emitter.ffiHasForeignCallback ||
     emitter.mod.functions.some((f) => f.async === true || f.generator !== undefined);
   const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];
@@ -1095,6 +1111,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ],
     fnDefs,
     partitionGroupLines(emitter.mod.functions),
+    partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
   );
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");

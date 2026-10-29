@@ -26,6 +26,7 @@ import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
 import { nodeApiCalleeOf } from "../node-api-import.js";
+import { lowerIslandSuperCall, lowerIslandSuperMethodCall } from "./lower-node-island.js";
 import { lowerNodeApiCall } from "./lower-node-island.js";
 import {
   adaptZeroArgTimerCallback,
@@ -642,6 +643,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (expr.expression.kind === ts.SyntaxKind.SuperKeyword) {
     const superCall = lowerer.ctx.superCall;
     if (superCall) return superCall(expr) as IrExpr;
+    const island = lowerIslandSuperCall(lowerer, expr);
+    if (island) return island;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -654,6 +657,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     ts.isPropertyAccessExpression(expr.expression) &&
     expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword
   ) {
+    const island = lowerIslandSuperMethodCall(lowerer, expr, expr.expression);
+    if (island) return island;
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
   }
   // `value.#m(...)` on a checked-dynamic value (`this` in a JavaScript
@@ -8909,6 +8914,56 @@ function lowerObjectStaticCall(
     if (!key) return null;
     const helper = recordHasOwnHelper(lowerer, receiver.type.shapeId, loc);
     return { kind: "call", callee: helper, args: [receiver, key], type: BOOL, loc };
+  }
+  // Object.getOwnPropertyNames over a fixed record: every own property a
+  // scriptc record carries is an enumerable declared field (or an index
+  // signature's overflow), so the answer is exactly Object.keys' walk —
+  // same construction, same interned helper. Tuples keep the fence (an
+  // array's own names include "length" and its indices), and so do
+  // accessor-carrying shapes (the walk cannot list accessor names).
+  if (member === "getOwnPropertyNames") {
+    if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
+      return null;
+    const node = call.arguments.nodes[0]!;
+    let recordT = lowerer.mapTypeOf(lowerer.typeOf(node));
+    const represented = tryLowerExpression(lowerer, node);
+    if (represented?.type.kind === "record") recordT = represented.type;
+    if (recordT?.kind !== "record") return null; // arrays, Maps, classes → the fence
+    const shape = lowerer.shapes.get(recordT.shapeId);
+    if (!shape || shape.tuple) return null; // tuple → the fence
+    fencePerfEntryKeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    fenceX509KeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    if (shapeHasAccessorSlots(shape)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "Object.getOwnPropertyNames over a shape carrying get/set accessor properties (Node lists the accessor names — the static key walk cannot; read the properties explicitly)",
+      );
+    }
+    if (shape.indexValue) {
+      return lowerObjectIterOverIndexShape(lowerer, call, "keys", recordT, shape);
+    }
+    const loc = locOf(call);
+    const enumerated = objectEnumerationReceiver(lowerer, lowerer.lowerExpr(node), recordT, loc);
+    const answer = (receiver: IrExpr): IrExpr =>
+      recordKeysArrayCall(lowerer, receiver, recordT, shape, loc);
+    // A record that kept undeclared properties of its checked source
+    // answers from its live checked view (the array checks back into
+    // string[]).
+    return recordMayKeepSource(lowerer, recordT)
+      ? throughRecordSource(lowerer, enumerated, loc, answer, (view, type) => ({
+          kind: "dynCheck",
+          value: {
+            kind: "libCall",
+            fn: "dyn.getOwnPropertyNames",
+            args: [view],
+            type: DYN,
+            loc,
+          },
+          type,
+          loc,
+        }))
+      : answer(enumerated);
   }
   if (member !== "keys" && member !== "values" && member !== "entries") return null;
   if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))

@@ -83,13 +83,17 @@ function recursiveFunctions(edges: ReadonlyMap<string, readonly string[]>): Set<
  * flag: those with a `throw` or rethrow of their own
  * and those up to THROW_LEVELS calls above one (a handler near the throw
  * takes it without a native unwind), and the recursive ones (deep stacks
- * are recursions). */
+ * are recursions). With `rareExceptions` (`--exceptions=rare`) only the
+ * functions with a `throw` of their own keep the flag for that reason: the
+ * program throws rarely, so the flag tests after the calls of the others
+ * cost more than the raises. */
 export function unwindAbiFunctions(
   mod: IrModule,
   mayThrow: ReadonlySet<string>,
   excluded: ReadonlySet<string> = new Set(),
   /** The module's node index: the bodies' nodes are read from it, in walk order, without walking. */
   nodes?: IrNodeIndex,
+  rareExceptions = false,
 ): Set<string> {
   const names = new Set(mod.functions.map((fn) => fn.name));
   const blocked = new Set<string>(excluded);
@@ -222,20 +226,22 @@ export function unwindAbiFunctions(
   // THROW_LEVELS calls above it. The union narrowing helpers' throws (a
   // failed narrowing) don't count for their callers.
   for (const name of throws) blocked.add(name);
-  let level = [...throws].filter((name) => !name.startsWith("%union."));
-  const near = new Set(level);
-  for (let i = 0; i < THROW_LEVELS; i++) {
-    const next: string[] = [];
-    for (const name of level)
-      for (const caller of callers.get(name) ?? [])
-        if (!near.has(caller)) {
-          near.add(caller);
-          next.push(caller);
-        }
-    level = next;
+  if (!rareExceptions) {
+    let level = [...throws].filter((name) => !name.startsWith("%union."));
+    const near = new Set(level);
+    for (let i = 0; i < THROW_LEVELS; i++) {
+      const next: string[] = [];
+      for (const name of level)
+        for (const caller of callers.get(name) ?? [])
+          if (!near.has(caller)) {
+            near.add(caller);
+            next.push(caller);
+          }
+      level = next;
+    }
+    for (const name of near) blocked.add(name);
+    for (const name of recursiveFunctions(callees)) blocked.add(name);
   }
-  for (const name of near) blocked.add(name);
-  for (const name of recursiveFunctions(callees)) blocked.add(name);
   const result = new Set<string>();
   for (const fn of mod.functions) {
     if (!mayThrow.has(fn.name) || blocked.has(fn.name)) continue;
@@ -243,7 +249,7 @@ export function unwindAbiFunctions(
     result.add(fn.name);
   }
   if (nodes !== undefined && process.env["SCRIPTC_EMIT_FACTS_VERIFY"] === "1") {
-    const walked = unwindAbiFunctions(mod, mayThrow, excluded);
+    const walked = unwindAbiFunctions(mod, mayThrow, excluded, undefined, rareExceptions);
     if (walked.size !== result.size || [...walked].some((name) => !result.has(name)))
       throw new InternalCompilerError(
         "unwind ABI: the functions read from the node index differ from a walk's",

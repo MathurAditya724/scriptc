@@ -103,7 +103,7 @@ function fixture(): IrModule {
 
 function emit(mod: IrModule): string {
   expect(validateModule(mod)).toEqual([]);
-  return emitLlvmModule(keepUnionsBoxed(mod), { pointerBits: 64 });
+  return emitLlvmModule(mod, { pointerBits: 64, ...keepUnionsBoxed(mod) });
 }
 
 test("an identity retype retains the input box instead of allocating", () => {
@@ -196,7 +196,7 @@ async function llvmFor(source: string, boxed = true): Promise<{ module: IrModule
       throw new Error(result.diagnostics.map((item) => `${item.code}: ${item.message}`).join("\n"));
     const module = deserializeModule(await readFile(output, "utf8"));
     expect(validateModule(module)).toEqual([]);
-    return { module, ir: emitLlvmModule(boxed ? keepUnionsBoxed(module) : module) };
+    return { module, ir: emitLlvmModule(module, boxed ? keepUnionsBoxed(module) : {}) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

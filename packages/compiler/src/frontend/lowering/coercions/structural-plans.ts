@@ -163,6 +163,26 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
   }
+  // A UNION of tuples/arrays into ONE array slot: each arm converts on its
+  // own tag (a tuple rebuilds through tupleArr, an array copies or lifts
+  // through arr), and a unit arm takes the stranded TypeError — the slot
+  // holds no unit. This includes a MIXED union that already holds the
+  // destination array arm beside a tuple arm (`["one"] | string[]` into
+  // `string[]`): Node has one array either way, so the tuple rebuilds
+  // instead of the checked extraction trapping on it. It sits BEFORE the
+  // checked-extraction rule below; a union whose only non-unit arm IS the
+  // destination (`T[] | undefined`) has nothing to convert and keeps the
+  // narrow it always took.
+  if (dst.kind === "array" && src.kind === "union") {
+    const from = lowerer.unions.get(src.unionId);
+    if (
+      from &&
+      from.arms.some((arm) => !isUnitType(arm)) &&
+      from.arms.some((arm) => !isUnitType(arm) && !typeEquals(arm, dst)) &&
+      from.arms.every((arm) => isUnitType(arm) || lowerer.widthLiftPlan(arm, dst) !== null)
+    )
+      return { how: "unionArr" };
+  }
   // A UNION source into a slot that is ONE of its arms (a width copy
   // whose target field narrowed — the option-table choices shape:
   // `value: boolean | string` copying into a `value: string` slot the
@@ -176,25 +196,6 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     lowerer.armTag(src.unionId, dst) >= 0
   ) {
     return { how: "narrow" };
-  }
-  // A UNION of tuples/arrays into ONE array slot that is not already one of
-  // its arms: each arm converts on its own tag (a tuple rebuilds through
-  // tupleArr, an array copies or lifts through arr), and a unit arm takes
-  // the stranded TypeError — the slot holds no unit. This sits AFTER the
-  // checked-extraction rule above, so a union that already contains the
-  // destination array arm keeps compiling to the same narrow it always did;
-  // only sources with no conversion at all (the `as const` key-table read)
-  // gain one.
-  if (dst.kind === "array" && src.kind === "union") {
-    const from = lowerer.unions.get(src.unionId);
-    if (
-      from &&
-      !from.arms.some((arm) => typeEquals(arm, dst)) &&
-      from.arms.some((arm) => !isUnitType(arm))
-    ) {
-      if (from.arms.every((arm) => isUnitType(arm) || lowerer.widthLiftPlan(arm, dst) !== null))
-        return { how: "unionArr" };
-    }
   }
   // A DERIVED instance into a BASE-typed slot (`{ p: Q }` copying into
   // `{ p: P }`): the same implicit upcast coerceToExpected performs at

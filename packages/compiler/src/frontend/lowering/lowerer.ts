@@ -3644,6 +3644,10 @@ export class Lowerer {
   }[] = [];
   /** Each island module load's path literal, set to its tree path when lowering ends. */
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
+  /** Island handle bindings by symbol (lower-node-island.ts). */
+  readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
+  /** `instanceof` expressions the island lowering already handles. */
+  readonly islandInstanceofHandled = new Set<ts.Node>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
@@ -4415,6 +4419,9 @@ export class Lowerer {
     "argumentCountSlots",
     "coercions.widenedReturnTypes",
     "packageFileMemo",
+    // NI-5: whether a symbol names an island handle binding depends only on
+    // its declaration, so the answer is a memo keyed by symbol.
+    "islandHandleBindings",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -4449,6 +4456,7 @@ export class Lowerer {
     "genericClassDemandPriority",
     "unitEvents",
     // scratch of the lowering in progress, and memos keyed by nodes
+    "islandInstanceofHandled",
     "nullishBindings",
     "implicitLocalFns",
     "builtinClassAliases",
@@ -12559,6 +12567,16 @@ export class Lowerer {
       }
     }
     if (expected.kind !== "union" || typeEquals(expr.type, expected)) {
+      // A MIXED union of tuples/arrays flowing into one of its own array
+      // arms (`["one"] | string[]` into `string[]`): Node has one array
+      // either way, so every arm converts on its tag (the width plan's
+      // unionArr) rather than the checked extraction trapping on the
+      // tuple arm. The plan promises this conversion exactly when a
+      // non-destination arm converts too.
+      if (expr.type.kind === "union" && expected.kind === "array") {
+        const lift = this.widthLiftPlan(expr.type, expected);
+        if (lift?.how === "unionArr") return this.applyWidthLift(lift, expr, expected, expr.loc);
+      }
       // A UNION value flowing into one of its own ARMS: the checker
       // proved the narrowing (control flow through a destructured
       // binding, `d ?? (d = ...)`, a predicate call — tsc typed the SITE
@@ -12601,20 +12619,6 @@ export class Lowerer {
       if (expr.type.kind === "union" && expected.kind === "record") {
         const lifted = unionArmsWidthLift(this, expr, expected);
         if (lifted) return lifted;
-      }
-      // A UNION of tuples/arrays flowing into an array slot that is not one
-      // of its arms (an `as const` key table's index read into
-      // `readonly string[]`): a width plan converts every arm on its own
-      // tag, a tuple rebuilding through tupleArr. Planned after the
-      // checked extraction above, and skipped when an arm already IS the
-      // slot, so every union that converted before keeps the same IR.
-      if (
-        expr.type.kind === "union" &&
-        expected.kind === "array" &&
-        !(this.unions.get(expr.type.unionId)?.arms ?? []).some((arm) => typeEquals(arm, expected))
-      ) {
-        const lift = this.widthLiftPlan(expr.type, expected);
-        if (lift) return this.applyWidthLift(lift, expr, expected, expr.loc);
       }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
@@ -16498,6 +16502,19 @@ export class Lowerer {
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
     const imported = ts.isIdentifier(expr) ? this.builtinImportOf(expr) : null;
     if (imported?.module === "util" && imported.member === "types") return "util/types";
+    // path.win32 / path.posix as NAMED import bindings (`import { win32 }
+    // from "node:path"`): the binding IS that sub-namespace module, so
+    // `win32.normalize(...)` keys the win32 table on every platform —
+    // Node's rule, each namespace answers its own platform's semantics
+    // anywhere.
+    if (
+      imported !== null &&
+      (imported.module === "path" ||
+        imported.module === "path/posix" ||
+        imported.module === "path/win32") &&
+      (imported.member === "win32" || imported.member === "posix")
+    )
+      return `path/${imported.member}`;
     const stored = ts.isIdentifier(expr)
       ? (this.peekLocal(expr)?.type ?? this.globalOf(expr)?.type)
       : undefined;

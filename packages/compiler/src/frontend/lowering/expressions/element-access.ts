@@ -1,6 +1,7 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
+import { constituentTypes } from "../../ts7/checker.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -27,6 +28,8 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  typeKey,
+  unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
@@ -55,7 +58,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedProbeAccessOf,
+  assertedReceiverNode,
+  probeMemberName,
+} from "./asserted-receiver.js";
 import {
   arrayNumberRead,
   arrayValueRead,
@@ -72,7 +80,7 @@ import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
-import { isSafeToRepeat } from "./evaluation-safety.js";
+import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
@@ -87,6 +95,29 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+
+/** The per-arm answer for a presence probe of an element read through an
+ * erased assertion (`typeof (u as R)["member"]`), or null when the read is
+ * a real use or has no per-arm answer (the assertion then extracts as
+ * usual). */
+function assertedProbeElementRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const assertion = assertedReceiverNode(expr.expression);
+  if (assertion === null || assertedProbeAccessOf(assertion) !== expr) return null;
+  const name = probeMemberName(expr);
+  if (name === null) return null;
+  // Only a union of arms has a per-arm answer. Check the checker type first:
+  // speculatively lowering a receiver that is not a union would leave the
+  // helpers it synthesized behind even though the probe declines.
+  if ((lowerer.typeOf(assertion.expression).flags & ts.TypeFlags.Union) === 0) return null;
+  const recv = tryLowerExpression(lowerer, expr.expression);
+  if (recv === null) return null;
+  if (recv.type.kind !== "union") return null;
+  return assertedMemberRead(lowerer, expr.expression, name, recv, locOf(expr));
+}
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
@@ -112,6 +143,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // tail short-circuits with the guard.
   if (!expr.questionDotToken && isOptionalChainTail(lowerer, expr)) {
     return lowerer.lowerOptionalChain(expr);
+  }
+  // A PRESENCE PROBE of a member read through an erased assertion in the
+  // bracket spelling (`typeof (u as R)["member"]`, `(u as R)["member"] !==
+  // undefined`): the dot spelling's twin. Node reads the member off the
+  // value actually stored, so the assertion's checked extraction must not
+  // run first — it would trap on the very arm the probe exists to detect.
+  // A real use keeps the extraction (lowerAsExpression only defers it for
+  // a probe).
+  {
+    const probe = assertedProbeElementRead(lowerer, expr);
+    if (probe) return probe;
   }
   // Enum accesses in element clothing — `E["A"]` forward reads and
   // `E[0]` reverse-mapping reads — fold to constants (lower-enums.ts),
@@ -461,12 +503,21 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           : lowerer.maybeNarrow(obj, expr.expression);
       }
       const idx = tupleLiteralIndex(expr.argumentExpression);
+      const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
+      const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       if (idx === null) {
-        lowerer.unsupported(
-          "SC1090",
-          expr.argumentExpression,
-          "tuple indexing with a non-literal index (tuples are fixed-shape — use t[0], t[1], ...)",
-        );
+        // A RUNTIME index over a fixed-shape tuple: the positional dispatch
+        // answers the element at an integer index in [0, arity) and
+        // undefined for anything else — exactly Node's array-like tuple
+        // read, out-of-range and fractional indices included.
+        if (obj.type.kind !== "record") {
+          lowerer.unsupported(
+            "SC1090",
+            expr.argumentExpression,
+            "tuple indexing with a non-literal index on a value that is a union of tuples (narrow it to one tuple first)",
+          );
+        }
+        return lowerTupleIndexRead(lowerer, expr, obj, shapeId, actualShape, locOf(expr));
       }
       // A union of tuples asserted to one tuple view (`(r as readonly
       // [boolean, T | E])[0]`) still holds the union.
@@ -474,8 +525,6 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         const element = lowerUnionTupleRead(lowerer, obj, idx, locOf(expr));
         if (element) return lowerer.maybeNarrow(element, expr);
       }
-      const shapeId = obj.type.kind === "record" ? obj.type.shapeId : receiverIr.shapeId;
-      const actualShape = lowerer.shapes.get(shapeId) ?? shape;
       const fieldType = actualShape.fields.find((f) => f.name === String(idx))?.type;
       if (fieldType === undefined) lowerer.badType(expr, lowerer.typeOf(expr)); // OOB smuggled past tsc
       const get: IrExpr = {
@@ -1439,6 +1488,40 @@ export function lowerRecordKeyRead(
     const read = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (read !== null && read.kind === "union" && recordKeyResultOk(lowerer, shape, read))
       declared = read;
+    else if (!isCalledAccess(expr)) {
+      // A key type that is a FINITE union of literal keys names a subset of
+      // the declared fields (`filter[resourceType]` over a settings record
+      // whose other members have their own types). The answer joins only
+      // the reachable fields' types — the checker's own answer type — and
+      // the read dispatches over those keys; a key the type system does not
+      // admit is a smuggled miss, which reads undefined as a missing
+      // property does (the join must hold the arm to say so).
+      const domain = literalKeyDomain(lowerer, keyNode);
+      const reachable =
+        domain === null ? [] : shape.fields.filter((field) => domain.includes(field.name));
+      if (domain !== null && reachable.length > 0 && reachable.length < shape.fields.length) {
+        const join = joinedFieldType(lowerer, reachable);
+        if (
+          join !== null &&
+          join.kind === "union" &&
+          lowerer.armTag(join.unionId, UNDEFINED_T) >= 0 &&
+          recordKeyResultOk(lowerer, { ...shape, fields: reachable }, join)
+        ) {
+          return lowerFiniteKeyedRead(
+            lowerer,
+            obj,
+            shapeId,
+            shape,
+            domain,
+            key,
+            join,
+            loc,
+            includeUndefined,
+            expr,
+          );
+        }
+      }
+    }
   }
   // Fields of different types answer a checked-dynamic value where nothing
   // typed the read: in JavaScript, and where the checker types it 'any'
@@ -1552,6 +1635,135 @@ function recordKeyTypeLiteralText(lowerer: Lowerer, node: ts.Expression): string
   return null;
 }
 
+/** The FINITE key domain a key type proves: the canonical property spelling
+ * of each string/number literal arm of a union-typed key, or of a key type
+ * that IS one literal. Null when the type keeps any arm that is not a
+ * literal (a widened string, a template, a symbol) — such a key can name
+ * any field, so no finite dispatch exists. */
+function literalKeyDomain(lowerer: Lowerer, node: ts.Expression): string[] | null {
+  let t: ts.Type = lowerer.typeOf(node);
+  if (t.flags & ts.TypeFlags.TypeParameter) {
+    const bound = lowerer.typeParamTsResolver(t);
+    if (!bound) return null;
+    t = bound;
+  }
+  const arms = (t.flags & ts.TypeFlags.Union) !== 0 ? constituentTypes(t) : [t];
+  const domain: string[] = [];
+  for (const arm of arms) {
+    if (arm.isStringLiteralType()) {
+      domain.push(arm.value);
+      continue;
+    }
+    if (arm.isNumberLiteralType()) {
+      const n = arm.value;
+      if (!Number.isFinite(n) || n < 0) return null;
+      domain.push(String(n));
+      continue;
+    }
+    return null;
+  }
+  return domain.length > 0 ? domain : null;
+}
+
+/* The interned join of the given fields' types, deduped and sorted (the
+ * canonical union form). Null when an arm has no value representation (a
+ * bare 'void', a generator, a caught value) — the caller keeps its fence. */
+function joinedFieldType(lowerer: Lowerer, fields: readonly { type: IrType }[]): IrType | null {
+  const arms: IrType[] = [];
+  const seen = new Set<string>();
+  const push = (t: IrType): boolean => {
+    if (t.kind === "union") {
+      const def = lowerer.unions.get(t.unionId);
+      if (!def) return false;
+      return def.arms.every(push);
+    }
+    if (t.kind === "void" || t.kind === "generator" || t.kind === "caught") return false;
+    const key = typeKey(t);
+    if (!seen.has(key)) {
+      seen.add(key);
+      arms.push(t);
+    }
+    return true;
+  };
+  for (const field of fields) if (!push(field.type)) return null;
+  if (arms.length === 0) return null;
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
+}
+
+/** `r[k]` where the key type is a FINITE union of literal keys naming a
+ * subset of `r`'s declared fields (`filter[resourceType]` over a settings
+ * record whose remaining members have their own types). The declared
+ * fields answer through a chain of key comparisons, each hit wrapped into
+ * the joined answer type; a key outside the domain reads undefined, as a
+ * missing property does. This is the per-key form of the keyed read the
+ * backend emits as a string switch — nothing is emitted for a field the
+ * key type cannot name, so the join stays exactly the checker's answer. */
+function lowerFiniteKeyedRead(
+  lowerer: Lowerer,
+  obj: IrExpr,
+  shapeId: string,
+  shape: IrRecordShape,
+  domain: readonly string[],
+  key: IrExpr,
+  answer: IrType & { kind: "union" },
+  loc: SrcLoc,
+  includeUndefined: boolean,
+  expr: ts.ElementAccessExpression,
+): IrExpr {
+  const stmts: IrStmt[] = [];
+  const settle = (value: IrExpr, name: string, force = false): IrExpr => {
+    if (!force && isSafeToRepeat(value)) return value;
+    const temp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+    return varRef(temp.id, temp.type, loc);
+  };
+  // JavaScript evaluates the receiver before the key, and an effectful key
+  // (`record[key()]`) may reassign the binding the receiver names, so a
+  // non-discardable key forces the receiver into a hidden local first.
+  const receiver = settle(obj, "%keyedReceiver", !isSafeToDiscard(key));
+  const stableKey = settle(key, "%keyedKey");
+  let result: IrExpr = {
+    kind: "unionWrap",
+    unionId: answer.unionId,
+    tag: lowerer.armTag(answer.unionId, UNDEFINED_T),
+    value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+    type: answer,
+    loc,
+  };
+  for (let i = domain.length - 1; i >= 0; i--) {
+    const name = domain[i]!;
+    const field = shape.fields.find((f) => f.name === name);
+    if (!field) continue;
+    const get: IrExpr = {
+      kind: "recordGet",
+      obj: receiver,
+      shapeId,
+      field: name,
+      type: field.type,
+      loc,
+    };
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: stableKey,
+        right: strLit(name, loc),
+        type: BOOL,
+        loc,
+      },
+      then: lowerer.coerceToExpected(get, answer),
+      else_: result,
+      type: answer,
+      loc,
+    };
+  }
+  const read: IrExpr =
+    stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: answer, loc };
+  return includeUndefined ? read : lowerer.maybeNarrow(read, expr);
+}
+
 /** The literal index of a tuple access, or null when the expression isn't
  * a non-negative integer literal (parentheses tolerated — tsc's own
  * literal-index typing accepts them). */
@@ -1561,6 +1773,118 @@ function tupleLiteralIndex(node: ts.Expression): number | null {
   if (!ts.isNumericLiteral(e)) return null;
   const n = Number(e.text);
   return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** `t[i]` on a tuple with a RUNTIME index. A tuple is a fixed-shape
+ * positional record, so the read is a chain of position comparisons: the
+ * element in [0, arity) and undefined for every other index — a fraction,
+ * a negative, NaN, Infinity, or one past the end, exactly Node's read of
+ * the underlying array. This mirrors the array index read
+ * (lowerSafeIndexRead): the result is the join of the element types armed
+ * with undefined, so a consumer observes the miss like any other optional
+ * element read. The chain stays inline because the arity is a compile-time
+ * constant — at most a handful of comparisons per read. */
+function lowerTupleIndexRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  obj: IrExpr,
+  shapeId: string,
+  shape: IrRecordShape,
+  loc: SrcLoc,
+): IrExpr {
+  const index = lowerOptionalNumber(
+    lowerer,
+    lowerer.lowerExpr(expr.argumentExpression),
+    locOf(expr.argumentExpression),
+    expr.argumentExpression,
+  );
+  if (index.type.kind !== "f64") {
+    lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+  }
+  // The answer type: the join of the element types plus undefined.
+  const arms: IrType[] = [];
+  const seen = new Set<string>();
+  const push = (t: IrType): void => {
+    if (t.kind === "union") {
+      const def = lowerer.unions.get(t.unionId);
+      if (!def) {
+        arms.push(t);
+        return;
+      }
+      for (const arm of def.arms) push(arm);
+      return;
+    }
+    const key = typeKey(t);
+    if (!seen.has(key)) {
+      seen.add(key);
+      arms.push(t);
+    }
+  };
+  for (const field of shape.fields) push(field.type);
+  push(UNDEFINED_T);
+  if (arms.some((a) => a.kind === "void" || a.kind === "generator" || a.kind === "caught")) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (an element type has no value representation)`,
+    );
+  }
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  if (arms.length > 1 && !unionContainerArmsOk(arms)) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `dynamic tuple indexing of '${lowerer.fmt({ kind: "record", shapeId })}' (the element types have no one native representation)`,
+    );
+  }
+  const resultT: IrType =
+    arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
+  // Both operands are read once per position: hold the ones that cannot be
+  // repeated, receiver first (JavaScript evaluates it before the index).
+  const stmts: IrStmt[] = [];
+  const settle = (value: IrExpr, name: string, force = false): IrExpr => {
+    if (!force && isSafeToRepeat(value)) return value;
+    const temp = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+    return varRef(temp.id, temp.type, loc);
+  };
+  // A repeated read of the receiver is only equivalent when the index cannot
+  // change what it names: an effectful index (`arr[key()]`) may reassign the
+  // binding, so the receiver is held in a hidden local first, as JavaScript
+  // evaluates it before the key.
+  const stableObj = settle(obj, "%tupleReceiver", !isSafeToDiscard(index));
+  const stableIndex = settle(index, "%tupleIndex");
+  const readAt = (position: number): IrExpr => {
+    const field = shape.fields[position]!;
+    const get: IrExpr = {
+      kind: "recordGet",
+      obj: stableObj,
+      shapeId,
+      field: field.name,
+      type: field.type,
+      loc,
+    };
+    return lowerer.coerceToExpected(get, resultT);
+  };
+  let answer: IrExpr = lowerer.wrappedUndefined(resultT, loc) ?? {
+    kind: "unitLit",
+    unit: "undefined",
+    type: UNDEFINED_T,
+    loc,
+  };
+  for (let position = shape.fields.length - 1; position >= 0; position--) {
+    const cond: IrExpr = {
+      kind: "bin",
+      op: "===",
+      left: stableIndex,
+      right: numLit(position, loc),
+      type: BOOL,
+      loc,
+    };
+    answer = { kind: "ternary", cond, then: readAt(position), else_: answer, type: resultT, loc };
+  }
+  if (stmts.length === 0) return answer;
+  return { kind: "seqExpr", stmts, result: answer, type: resultT, loc };
 }
 
 export function lowerElementCompoundParts(

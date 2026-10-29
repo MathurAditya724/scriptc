@@ -8,6 +8,7 @@ import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { resultIsDiscarded } from "../call-position.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { voidizedCallback } from "../lower-server.js";
 import {
@@ -352,7 +353,13 @@ export function lowerProcessStreamProperty(
       loc: locOf(expr),
     };
   }
-  if (member !== "isTTY" && member !== "columns" && member !== "rows") return null;
+  if (
+    member !== "isTTY" &&
+    member !== "columns" &&
+    member !== "rows" &&
+    member !== "writableLength"
+  )
+    return null;
   let recv: ts.Expression = expr.expression;
   while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
     recv = recv.expression;
@@ -378,6 +385,28 @@ export function lowerProcessStreamProperty(
       ["stdout", "stderr"].includes(lowerer.stdlibGlobalMember(recv, "process") ?? "")
     )
   ) {
+    // A FIRST-CLASS ALIAS of the stream (`const out = process.stdout;
+    // out.writableLength`) answers the same constant the direct read
+    // does: the compiled binary's fd 1/2 writes are synchronous, so
+    // nothing is ever queued and Node's number is always 0. The other
+    // members stay keyed reads — the runtime stream answers their live
+    // values (isatty columns/rows, stdin readableLength).
+    if (member === "writableLength") {
+      // The receiver still EVALUATES: a call or property read that hands
+      // back the stream runs its own side effects — and throws where Node
+      // throws — before the constant answers, exactly as the read of the
+      // member would. A pure receiver (the alias above) folds away.
+      const answer: IrExpr = { kind: "numLit", value: 0, type: F64, loc: locOf(expr) };
+      const effect = lowerer.lowerExpr(expr.expression);
+      if (isSafeToDiscard(effect)) return answer;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: effect, loc: locOf(expr.expression) }],
+        result: answer,
+        type: F64,
+        loc: locOf(expr),
+      };
+    }
     const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
     return lowerer.coerceToExpected(
       {
@@ -400,6 +429,12 @@ export function lowerProcessStreamProperty(
     type: F64,
     loc,
   };
+  // The compiled binary writes to fd 1/2 SYNCHRONOUSLY: when the call
+  // returns, the bytes have reached the descriptor and nothing is queued
+  // in the stream's buffer — Node's number, always 0 (`write()` answers
+  // true for the same reason). Backpressure probes read 0 and stay
+  // correct; the write itself never defers.
+  if (member === "writableLength") return { kind: "numLit", value: 0, type: F64, loc };
   if (member === "isTTY") {
     const type = lowerer.withUndefinedArm(BOOL);
     return {
@@ -813,7 +848,7 @@ export function lowerProcessMethodCall(
     if (call.arguments.nodes.length !== 0) {
       lowerer.noLowering(`process.disconnect with ${call.arguments.nodes.length} arguments`, call);
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,
@@ -974,7 +1009,7 @@ export function lowerProcessMethodCall(
         '"data", "end", "error", and "keypress" are the supported stdin events (as literals)',
       );
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,
@@ -1279,7 +1314,7 @@ export function lowerProcessMethodCall(
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if ((event === "message" || event === "disconnect") && !isOff) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1299,7 +1334,7 @@ export function lowerProcessMethodCall(
       };
     }
     if (event === "uncaughtException" || event === "uncaughtExceptionMonitor") {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported("SC1090", call, "chaining process exception listener registration");
       }
       const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
@@ -1321,7 +1356,7 @@ export function lowerProcessMethodCall(
     // a handler attached after delivery fires it once, synchronously
     // with the promise.
     if (event === "unhandledRejection" || event === "rejectionHandled") {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1344,7 +1379,7 @@ export function lowerProcessMethodCall(
     // util.deprecate dispatch on the next tick. off/removeListener remove
     // by closure identity.
     if (event === "warning" && (member === "on" || isOff)) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
           call,
@@ -1361,7 +1396,7 @@ export function lowerProcessMethodCall(
       };
     }
     if (event === null || event.startsWith("SIG")) {
-      if (!ts.isExpressionStatement(call.parent)) {
+      if (!resultIsDiscarded(call)) {
         lowerer.unsupported("SC1090", call, "chaining process signal listener registration");
       }
       const name = lowerer.coerceToExpected(lowerer.lowerExpr(call.arguments.nodes[0]!), STRING);
@@ -1387,7 +1422,7 @@ export function lowerProcessMethodCall(
     if (event !== "exit") {
       lowerer.noLowering(`process.${member}("${event}", ...)`, call.arguments.nodes[0]!);
     }
-    if (!ts.isExpressionStatement(call.parent)) {
+    if (!resultIsDiscarded(call)) {
       lowerer.unsupported(
         "SC1090",
         call,

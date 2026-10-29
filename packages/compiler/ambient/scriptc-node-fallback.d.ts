@@ -1258,6 +1258,9 @@ interface Response {
    * direct use and points at bytes(). */
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  /* A copy whose body is one branch of the body's tee; the original keeps
+   * the other. */
+  clone(): Response;
 }
 interface ResponseInit {
   headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
@@ -1335,6 +1338,7 @@ interface Request {
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  clone(): Request;
 }
 interface RequestInit {
   method?: string;
@@ -1740,6 +1744,9 @@ declare module "tty" {
     readonly isTTY: boolean;
     readonly columns: number;
     readonly rows: number;
+    /* The bytes queued behind the last write: the compiled binary's fd
+     * 1/2 writes are synchronous, so it is always 0. */
+    readonly writableLength: number;
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;

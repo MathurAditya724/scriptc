@@ -233,22 +233,25 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${t} = load ptr, ptr ${slot}`);
     return host.own({ name: t, type: e.type });
   }
-  if (e.fn === "spawnRes.signal") {
+  if (e.fn === "spawnRes.signal" || e.fn === "child.signalCode") {
     // The `string | null` union (the termination signal's name, null
     // for a normal exit or spawn failure) — the has/get pair wrapped
     // type-directedly.
     if (e.type.kind !== "union")
-      throw new InternalCompilerError("llvm emitter bug: spawnRes.signal result is not a union");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
     const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
     const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
     if (strTag < 0 || nullTag < 0)
-      throw new InternalCompilerError("llvm emitter bug: spawnRes.signal union lacks its arms");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const recv = host.emitExpr(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_spawn_res_has_signal(ptr)`);
-    host.declare(`declare ptr @scr_spawn_res_signal(ptr)`);
+    const has =
+      e.fn === "spawnRes.signal" ? "scr_spawn_res_has_signal" : "scr_child_has_signal_code";
+    const get = e.fn === "spawnRes.signal" ? "scr_spawn_res_signal" : "scr_child_signal_code";
+    host.declare(`declare zeroext i1 @${has}(ptr)`);
+    host.declare(`declare ptr @${get}(ptr)`);
     const hasV = B.tmp();
-    B.line(`${hasV} = call zeroext i1 @scr_spawn_res_has_signal(ptr ${recv.name})`);
+    B.line(`${hasV} = call zeroext i1 @${has}(ptr ${recv.name})`);
     const rawSlot = B.slot();
     B.entryAllocas.push(`${rawSlot} = alloca ptr`);
     B.line(`store ptr null, ptr ${rawSlot}`);
@@ -257,7 +260,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.condBr(hasV, lp, lj);
     B.startBlock(lp);
     const sv = B.tmp();
-    B.line(`${sv} = call ptr @scr_spawn_res_signal(ptr ${recv.name}) ; +1`);
+    B.line(`${sv} = call ptr @${get}(ptr ${recv.name}) ; +1`);
     B.line(`store ptr ${sv}, ptr ${rawSlot}`);
     B.br(lj);
     B.startBlock(lj);

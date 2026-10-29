@@ -1066,7 +1066,9 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (!b || b->n == 0) return false;
   size_t n = b->n;
-  ScrEeEntry **snap = malloc(n * sizeof *snap);
+  /* Most events have a listener or two: their snapshot stays on the stack. */
+  ScrEeEntry *small[4];
+  ScrEeEntry **snap = n <= 4 ? small : malloc(n * sizeof *snap);
   if (!snap) scr_ee_oom();
   for (size_t i = 0; i < n; i++) {
     snap[i] = b->ls[i];
@@ -1130,7 +1132,7 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
     }
     scr_ee_entry_unref(e);
   }
-  free(snap);
+  if (snap != small) free(snap);
   return true;
 }
 

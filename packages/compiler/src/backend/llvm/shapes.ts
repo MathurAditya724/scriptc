@@ -42,7 +42,7 @@ import {
   cycleAppendHelper,
   inlineBufferingSupported,
 } from "./alloc.js";
-import type { BlockBuilder } from "./blocks.js";
+import { LOOP_SITE, type BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   NULLABLE_NULL,
@@ -805,7 +805,9 @@ function inlineRcName(family: string, op: RcOp): string {
  * grows faster than the number of inlined releases in one function, and
  * generated dispatch tables and module initializers of large packages have
  * thousands of release sites; a body with more calls scr_dyn_release, which
- * the inline helper mirrors, at every site. */
+ * the inline helper mirrors, at every site except up to this many sites
+ * inside its loops (a script's top-level loop runs in its module
+ * initializer). */
 export const INLINE_DYN_RELEASES_PER_FUNCTION = 256;
 
 /** Inlined string releases one function body keeps in `release` emission,
@@ -878,6 +880,14 @@ export function limitInlineReleases(
     for (let f = from; f <= to; f++) if (anyOver.has(f)) return true;
     return false;
   };
+  // A body over its dyn limit keeps inline the releases emitted inside
+  // loops (LOOP_SITE), up to the limit, and calls the runtime at the rest.
+  const dynFamily = families.indexOf("dyn");
+  const keptInLoops = new Map<number, number>();
+  const inLoop = (part: string, at: number): boolean => {
+    const end = part.indexOf("\n", at);
+    return (end < 0 ? part.slice(at) : part.slice(at, end)).endsWith(LOOP_SITE);
+  };
   return parts.map((part, index) => {
     const from = spans[2 * index]!;
     if (!touches(from, spans[2 * index + 1]!)) return part;
@@ -885,7 +895,15 @@ export function limitInlineReleases(
     sites(
       part,
       (at, family, f) => {
-        if (over[family]!.has(f)) cuts.push({ at, family });
+        if (!over[family]!.has(f)) return;
+        if (family === dynFamily && inLoop(part, at)) {
+          const kept = keptInLoops.get(f) ?? 0;
+          if (kept < limits[family]!) {
+            keptInLoops.set(f, kept + 1);
+            return;
+          }
+        }
+        cuts.push({ at, family });
       },
       from,
     );
