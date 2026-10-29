@@ -1220,6 +1220,9 @@ void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
+/* Symbol.toStringTag (borrowed), or NULL before the program first
+ * evaluates it. */
+const ScrDyn *scr_dyn_to_string_tag_symbol(void);
 /* Whether key is Symbol.asyncIterator. */
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
 /* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
