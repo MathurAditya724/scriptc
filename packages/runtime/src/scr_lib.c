@@ -1370,22 +1370,23 @@ static int scr_wasi_kill(int pid, int sig) {
 #define scr_sys_kill(pid, sig) kill((pid_t)(pid), (sig))
 #endif
 
+static const char *scr_errno_name(int e, char *fallback, size_t cap);
+static const char *scr_errno_text(int e);
+static ScrError *scr_fs_error_details(int e, const char *name, const char *message, size_t length,
+                                      const char *op, const ScrStr *path, const ScrStr *dest);
+
+/* Node's errnoException(err, "kill"): message "kill <code>", with own
+ * errno (the negative uv code), code and syscall properties. */
 static bool scr_kill_send(int pid, int sig) {
   if (scr_sys_kill(pid, sig) == 0) return true;
-  const char *name = errno == ESRCH   ? "ESRCH"
-                     : errno == EPERM ? "EPERM"
-                     : errno == EINVAL ? "EINVAL"
-                                       : NULL;
+  int e = errno;
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
   char msg[32];
-  int len;
-  if (name) {
-    len = snprintf(msg, sizeof msg, "kill %s", name);
-    /* Node's errnoException carries code = the errno name. */
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
-  } else {
-    len = snprintf(msg, sizeof msg, "kill E%d", errno);
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)len);
-  }
+  int len = snprintf(msg, sizeof msg, "kill %s", name);
+  ScrError *error = scr_fs_error_details(e, name, msg, (size_t)len, "kill", NULL, NULL);
+  error->errno_order = true;
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
   return false;
 }
 
@@ -1405,7 +1406,7 @@ bool scr_process_kill_named(double pid, const ScrStr *signal) {
       scr_trap("scriptc: out of memory\n");
     }
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -1489,6 +1490,10 @@ ScrStr *scr_os_user_homedir(void) {
   return scr_os_homedir(); /* uv_os_get_passwd reuses uv_os_homedir on win */
 }
 
+/* uv_os_get_passwd on Windows has no uid or gid: both are -1. */
+double scr_os_user_uid(void) { return -1; }
+double scr_os_user_gid(void) { return -1; }
+
 ScrStr *scr_os_release(void) {
   /* uv_os_uname on Windows: RtlGetVersion (the un-lied-to GetVersionEx),
    * rendered "major.minor.build" — Node answers e.g. "10.0.26100". */
@@ -1554,6 +1559,8 @@ ScrStr *scr_os_user_name(void) {
 }
 ScrStr *scr_os_user_shell(void) { return scr_str_new("", 0); }
 ScrStr *scr_os_user_homedir(void) { return scr_os_homedir(); }
+double scr_os_user_uid(void) { return -1; }
+double scr_os_user_gid(void) { return -1; }
 ScrStr *scr_os_release(void) { return scr_str_new("", 0); }
 ScrStr *scr_os_type(void) { return scr_str_new("WASI", 4); }
 double scr_os_totalmem(void) { return 0; }
@@ -1565,26 +1572,27 @@ double scr_os_available_parallelism(void) { return 1; }
 ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 #else
 ScrStr *scr_os_homedir(void) {
-  /* uv_os_homedir: $HOME when set (even empty is "set" only if non-NULL;
-   * libuv requires non-empty), else the passwd entry. */
+  /* uv_os_homedir: $HOME whenever it is set, an empty value included,
+   * else the passwd entry of the effective uid. */
   const char *home = scr_getenv("HOME");
-  if (home && home[0] != '\0') return scr_str_new(home, strlen(home));
+  if (home) return scr_str_new(home, strlen(home));
   struct passwd pw;
   struct passwd *result = NULL;
   char buf[8192];
-  if (getpwuid_r(getuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
+  if (getpwuid_r(geteuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
     scr_trap("scriptc: os.homedir() failed\n");
   }
   return scr_str_new(result->pw_dir, strlen(result->pw_dir));
 }
 
-/* The os.userInfo() field trio — uv_os_get_passwd's slices. One passwd
- * lookup per call (three calls per userInfo record — cheap, no caching
- * to invalidate). Failure aborts: Node throws a system error there, but
- * no compiled program path reaches it for the running uid. */
+/* The os.userInfo() fields — uv_os_get_passwd's slices of the passwd
+ * entry for the effective uid. One passwd lookup per call (one call per
+ * userInfo field — cheap, no caching to invalidate). Failure aborts: Node
+ * throws a system error there, but no compiled program path reaches it
+ * for the running uid. */
 static const struct passwd *scr_os_passwd(char *buf, size_t cap, struct passwd *pw) {
   struct passwd *result = NULL;
-  if (getpwuid_r(getuid(), pw, buf, cap, &result) != 0 || !result) {
+  if (getpwuid_r(geteuid(), pw, buf, cap, &result) != 0 || !result) {
     scr_trap("scriptc: os.userInfo() failed\n");
   }
   return result;
@@ -1612,6 +1620,20 @@ ScrStr *scr_os_user_homedir(void) {
   char buf[8192];
   const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
   return scr_str_new(r->pw_dir, strlen(r->pw_dir));
+}
+
+/* The entry's pw_uid and pw_gid: the user's primary group, which can
+ * differ from the process gid. */
+double scr_os_user_uid(void) {
+  struct passwd pw;
+  char buf[8192];
+  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_uid;
+}
+
+double scr_os_user_gid(void) {
+  struct passwd pw;
+  char buf[8192];
+  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_gid;
 }
 
 ScrStr *scr_os_release(void) {
@@ -2983,6 +3005,33 @@ double scr_process_umask(double mask) {
 #endif
 }
 
+/* Node's chdir failure: the uv exception carries the working directory
+ * as path and the target, as given, as dest ("ENOENT: no such file or
+ * directory, chdir '<cwd>' -> '<target>'"). */
+static void scr_process_chdir_throw(int e, const ScrStr *dir) {
+#ifdef _WIN32
+  ScrStr *cwd = scr_process_cwd();
+#else
+  char buf[4096];
+  ScrStr *cwd = getcwd(buf, sizeof buf) ? scr_str_new(buf, strlen(buf)) : NULL;
+#endif
+  if (cwd == NULL) {
+    scr_fs_throw(e, "chdir", dir);
+    return;
+  }
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+  const char *text = scr_errno_text(e);
+  size_t cap = strlen(name) + strlen(text) + cwd->len + dir->len + 24;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int len = snprintf(msg, cap, "%s: %s, chdir '%s' -> '%s'", name, text, cwd->data, dir->data);
+  ScrError *error = scr_fs_error_details(e, name, msg, (size_t)len, "chdir", cwd, dir);
+  free(msg);
+  scr_str_release(cwd);
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 void scr_process_chdir(ScrStr *dir) {
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
@@ -2996,9 +3045,9 @@ void scr_process_chdir(ScrStr *dir) {
   BOOL changed = wide && SetCurrentDirectoryW(wide);
   DWORD error = changed ? ERROR_SUCCESS : GetLastError();
   free(wide);
-  if (!changed) scr_fs_throw(scr_fs_win_errno(error), "chdir", dir);
+  if (!changed) scr_process_chdir_throw(scr_fs_win_errno(error), dir);
 #else
-  if (chdir(dir->data) != 0) scr_fs_throw(errno, "chdir", dir);
+  if (chdir(dir->data) != 0) scr_process_chdir_throw(errno, dir);
 #endif
 }
 
@@ -3065,6 +3114,7 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case ELOOP: return "ELOOP";
   case ENOSYS: return "ENOSYS";
   case ENOTSUP: return "ENOTSUP";
+  case ESRCH: return "ESRCH";
   default:
     snprintf(fallback, cap, "E%d", e);
     return fallback;

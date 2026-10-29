@@ -261,6 +261,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",
   "os.userHomedir": "scr_os_user_homedir",
+  "os.userUid": "scr_os_user_uid",
+  "os.userGid": "scr_os_user_gid",
   "os.tmpdir": "scr_os_tmpdir",
   "process.argv": "scr_process_argv",
   "process.execArgv": "scr_process_exec_argv",

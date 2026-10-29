@@ -2318,7 +2318,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   },
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell"],
+    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },
