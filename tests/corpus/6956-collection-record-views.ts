@@ -40,3 +40,25 @@ type Sized = { readonly size: number };
 const sized: Sized = byId;
 byId.set("id4", 4);
 console.log(sized.size, byId.size);
+
+// A view handed on to a second structural type is still the collection: the
+// second view's calls answer through it, and later writes stay visible.
+type Lookup = { get(key: string): number | undefined };
+type Table = { get(key: string): number | undefined; has(key: string): boolean };
+function viaLookup(table: Lookup, key: string): number {
+  return table.get(key) ?? -1;
+}
+function viaTable(table: Table, key: string): number {
+  return table.has(key) ? viaLookup(table, key) : -2;
+}
+console.log(viaTable(byId, "id1"), viaTable(byId, "nope"));
+byId.set("id5", 5);
+console.log(viaTable(byId, "id5"));
+type Member = { has(key: string): boolean };
+function viaMember(member: Member, key: string): boolean {
+  return member.has(key);
+}
+function viaExists(existing: Exists, key: string): boolean {
+  return viaMember(existing, key);
+}
+console.log(viaExists(seen, "id3"), viaExists(seen, "id9"));

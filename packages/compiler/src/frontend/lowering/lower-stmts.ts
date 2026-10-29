@@ -10667,11 +10667,15 @@ function lowerForOfEmptyArrayArm(
   const tag = lowerer.armTag(iterable.type.unionId, armT);
   if (tag < 0) return null;
   const loc = locOf(stmt);
+  // The tag test and the walk read the source once: a call or getter in the
+  // head runs one time, and the loop walks the value the test saw.
+  const source = lowerer.declareHiddenLocal("%forOfEmptyArm", iterable.type);
+  const sourceRef: IrExpr = { kind: "varRef", localId: source.id, type: iterable.type, loc };
   const narrowed: IrExpr = {
     kind: "unionNarrow",
     unionId: iterable.type.unionId,
     tag,
-    value: iterable,
+    value: sourceRef,
     type: armT,
     loc,
   };
@@ -10682,18 +10686,25 @@ function lowerForOfEmptyArrayArm(
         ? lowerForOfMap(lowerer, stmt, narrowed, armT)
         : lowerForOfString(lowerer, stmt, narrowed, labels);
   return {
-    kind: "if",
-    cond: {
-      kind: "unionIsTag",
-      unionId: iterable.type.unionId,
-      tag,
-      negated: false,
-      value: iterable,
-      type: BOOL,
-      loc,
-    },
-    then: [loop],
-    else_: null,
+    kind: "block",
+    body: [
+      { kind: "varDecl", localId: source.id, init: iterable, loc },
+      {
+        kind: "if",
+        cond: {
+          kind: "unionIsTag",
+          unionId: iterable.type.unionId,
+          tag,
+          negated: false,
+          value: sourceRef,
+          type: BOOL,
+          loc,
+        },
+        then: [loop],
+        else_: null,
+        loc,
+      },
+    ],
     loc,
   };
 }

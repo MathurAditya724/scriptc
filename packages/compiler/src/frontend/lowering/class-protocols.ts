@@ -1092,17 +1092,26 @@ export class ClassProtocols {
     const from = source.getSymbol();
     if (from === symbol) return false;
     const facts = this.facts;
+    let collectionGrew = false;
     if (facts !== null) {
       // A Map or Set that reaches the view, which answers one of its
       // members: a record copy has no live backing behind `has`, `get` or
       // `size`, and Node's answer changes with every later write. The view
       // keeps checked identity, but not protocol dispatch: its members are
-      // the collection's own methods.
-      if (this.isBuiltinCollection(source)) {
-        const names = new Set(
-          this.checker.getPropertiesOfType(target).map((property) => ts.symbolName(property)),
-        );
-        if (this.exposesCollectionMember(source, names)) this.collectionViews.add(symbol);
+      // the collection's own methods. A collection view's value handed on
+      // to another structural type is the same collection, so that view
+      // answers through it too.
+      const collection = this.isBuiltinCollection(source)
+        ? this.exposesCollectionMember(
+            source,
+            new Set(
+              this.checker.getPropertiesOfType(target).map((property) => ts.symbolName(property)),
+            ),
+          )
+        : from !== undefined && this.collectionViews.has(from);
+      if (collection && !this.collectionViews.has(symbol)) {
+        this.collectionViews.add(symbol);
+        collectionGrew = true;
       }
       // The flow: the source's classes and marked type reach `symbol`.
       const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
@@ -1115,7 +1124,9 @@ export class ClassProtocols {
         facts.flows.set(from, flows);
       }
     }
-    if (marked.has(symbol)) return false;
+    // A view marked earlier that becomes a collection view still changes
+    // the fixpoint: the views its values flow into are asked again.
+    if (marked.has(symbol)) return collectionGrew;
     marked.add(symbol);
     return true;
   }

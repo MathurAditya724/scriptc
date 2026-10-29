@@ -39,5 +39,21 @@ function main(): void {
   let seen = 0;
   for (const item of empty) seen += item.length;
   console.log("annotated", seen);
+
+  // The head runs once: a lookup with a side effect is called one time, and
+  // the walk iterates the value the tag test saw.
+  let calls = 0;
+  const alternate = (): Set<string> | undefined => (++calls % 2 === 1 ? sets.get("a") : undefined);
+  let walked = 0;
+  for (const item of alternate() ?? []) walked += item.length;
+  console.log("once", calls, walked);
+  let mapCalls = 0;
+  const mapLookup = (): Map<string, number> | undefined => {
+    mapCalls++;
+    return maps.get("a");
+  };
+  let mapWalked = 0;
+  for (const [name, value] of mapLookup() ?? []) mapWalked += name.length + value;
+  console.log("map once", mapCalls, mapWalked);
 }
 main();
