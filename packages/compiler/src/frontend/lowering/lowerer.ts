@@ -13275,11 +13275,12 @@ export class Lowerer {
     // NamedEvaluation through a variable initializer) — inspect prints
     // [Function: name] and call errors spell it, like Node.
     if (e.kind === "dynFrom" && e.value.type.kind === "func" && e.fnName === undefined) {
+      const boxed = e;
       const builtinName = this.workerTargets.length > 0 ? builtinValueNameOf(node, this) : null;
       const name = jsFuncNameOf(node, this);
       if (builtinName !== null && typeof builtinName !== "string") {
-        e = this.withBuiltinFunctionName({ ...e, fnName: builtinName.main }, builtinName);
-      } else if (name !== null) e = { ...e, fnName: name };
+        e = this.withBuiltinFunctionName({ ...boxed, fnName: builtinName.main }, builtinName);
+      } else if (name !== null) e = { ...boxed, fnName: name };
     }
     // A union the plain re-tag declined (stranded NON-unit arms): when the
     // node's CHECKER type proves those arms away, they trap instead — the
@@ -17142,7 +17143,11 @@ export class Lowerer {
   builtinFunctionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
     if (expr.kind !== "closure") return {};
     const names = this.builtinCallableValueNames.get(expr.fnName);
-    const name = typeof names === "string" ? names : names?.main;
+    let name: string | undefined;
+    if (names !== undefined) {
+      if (typeof names === "string") name = names;
+      else name = names.main;
+    }
     const length = this.builtinCallableValueLengths.get(expr.fnName);
     return {
       ...(name !== undefined ? { fnName: name } : {}),
@@ -17157,12 +17162,13 @@ export class Lowerer {
     explicitName?: BuiltinValueName,
   ): IrExpr {
     if (this.workerTargets.length === 0) return boxed;
-    const name =
-      explicitName ??
-      (boxed.value.kind === "closure"
-        ? this.builtinCallableValueNames.get(boxed.value.fnName)
-        : undefined);
-    if (name === undefined || typeof name === "string") return boxed;
+    let name = explicitName;
+    if (name === undefined) {
+      const value = boxed.value;
+      if (value.kind === "closure") name = this.builtinCallableValueNames.get(value.fnName);
+    }
+    if (name === undefined) return boxed;
+    if (typeof name === "string") return boxed;
     return {
       kind: "ternary",
       cond: { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc: boxed.loc },
