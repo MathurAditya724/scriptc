@@ -67,6 +67,38 @@ export {};
   expect(kinds.has("unionNarrow")).toBe(true);
 });
 
+test("a for-of over never[] beside an effectful receiver evaluates it once", async () => {
+  const result = await lower(`
+function registry(): Map<string, Set<string>> | undefined {
+  return new Map();
+}
+function total(): number {
+  let sum = 0;
+  for (const name of registry() ?? []) sum += name.length;
+  return sum;
+}
+console.log(total());
+export {};
+`);
+  if (!result.ok) throw new Error(`fenced: ${result.codes.join(", ")}`);
+  expect(validateModule(result.module)).toEqual([]);
+  // The tag test and the walk share ONE evaluation: the receiver is a call,
+  // not a plain read, so it lands in a hidden local both reads use.
+  let calls = 0;
+  const count = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) count(item);
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    const node = value as { kind?: unknown; callee?: unknown };
+    if (node.kind === "call" && node.callee === "registry") calls++;
+    for (const child of Object.values(value)) count(child);
+  };
+  count(result.module.functions);
+  expect(calls).toBe(1);
+});
+
 test("a union of two inhabited iterables still has no common iteration", async () => {
   const result = await lower(`
 function total(registry: Map<string, Set<string> | string[]>, key: string): number {
