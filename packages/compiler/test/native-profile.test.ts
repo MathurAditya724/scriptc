@@ -130,6 +130,76 @@ function expectedExit(argc: number, edit = 0): number {
   return Number(total % 251n);
 }
 
+/** A program whose `rare` runs only with more than ten arguments, which
+ * training never passes; `added` (with `extra`) is defined after the
+ * profile was collected. */
+function rareProgram(extra = false): string {
+  const lines = ["; profiled program with a function training never runs"];
+  const helpers: [string, number][] = [
+    ["hot", 5],
+    ["rare", 9],
+    ...(extra ? [["added", 11]] : []),
+  ] as [string, number][];
+  for (const [name, factor] of helpers)
+    lines.push(
+      `define internal i64 @${name}(i64 %n) noinline {`,
+      "entry:",
+      `  %m = mul i64 %n, ${factor}`,
+      "  %bit = and i64 %m, 1",
+      "  %odd = icmp ne i64 %bit, 0",
+      "  br i1 %odd, label %a, label %b",
+      "a:",
+      `  %x = add i64 %m, ${factor}`,
+      "  br label %c",
+      "b:",
+      "  %y = sub i64 %m, 1",
+      "  br label %c",
+      "c:",
+      "  %r = phi i64 [ %x, %a ], [ %y, %b ]",
+      "  ret i64 %r",
+      "}",
+    );
+  lines.push(
+    "define i32 @main(i32 %argc, ptr %argv) {",
+    "entry:",
+    "  %w = sext i32 %argc to i64",
+    "  %h = call i64 @hot(i64 %w)",
+    "  %many = icmp ugt i32 %argc, 10",
+    "  br i1 %many, label %rare.call, label %done",
+    "rare.call:",
+    "  %r = call i64 @rare(i64 %h)",
+    ...(extra ? ["  %e = call i64 @added(i64 %r)"] : []),
+    "  br label %done",
+    "done:",
+    `  %v = phi i64 [ %h, %entry ], [ ${extra ? "%e" : "%r"}, %rare.call ]`,
+    "  %low = and i64 %v, 127",
+    "  %code = trunc i64 %low to i32",
+    "  ret i32 %code",
+    "}",
+  );
+  return lines.join("\n") + "\n";
+}
+
+function rareExit(argc: number): number {
+  const step = (n: number, factor: number) => {
+    const m = n * factor;
+    return m % 2 === 1 ? m + factor : m - 1;
+  };
+  let v = step(argc, 5);
+  if (argc > 10) v = step(v, 9);
+  return v & 127;
+}
+
+/** The section that holds `name` in an object file. */
+async function sectionOf(object: string, name: string): Promise<string | undefined> {
+  const { stdout } = await execFileAsync("objdump", ["-t", object]);
+  return stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .find((fields) => fields.at(-1) === name)
+    ?.at(-3);
+}
+
 const INLINED = 6;
 
 /** A program whose helpers are too large for the inliner that runs before the
@@ -263,8 +333,14 @@ async function run(executable: string, argc: number, env: NodeJS.ProcessEnv = {}
   }
 }
 
-async function merge(output: string, inputs: string[]) {
-  return execFileAsync(helper!, ["merge-profiles", "--output", output, ...inputs]);
+async function merge(output: string, inputs: string[], sparse = false) {
+  return execFileAsync(helper!, [
+    "merge-profiles",
+    "--output",
+    output,
+    ...(sparse ? ["--sparse"] : []),
+    ...inputs,
+  ]);
 }
 
 /** An instrumented build of `source` run with 1 and 3 arguments, its raw
@@ -275,6 +351,7 @@ async function collect(
   outputs: number,
   name: string,
   expected: (argc: number) => number = expectedExit,
+  sparse = false,
 ) {
   const raw = join(dir, `${name}-raw`);
   const objects = await emit(dir, source, { outputs, name, generate: join(raw, "%p.profraw") });
@@ -284,7 +361,7 @@ async function collect(
   const profiles = (await readdir(raw)).map((file) => join(raw, file));
   expect(profiles).toHaveLength(2);
   const profile = join(dir, `${name}.profdata`);
-  await merge(profile, profiles);
+  await merge(profile, profiles, sparse);
   return { profile, raws: profiles };
 }
 
@@ -561,6 +638,37 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
         missing: 1,
         recovered: 1,
       });
+    });
+
+    test("block counts mark the functions a sparse profile never ran as cold", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-blocks-never-"));
+      dirs.push(dir);
+      const { profile } = await collect(dir, rareProgram(), 1, "train", rareExit, true);
+      const blocks = join(dir, "train.blocks");
+      await emit(dir, rareProgram(), {
+        outputs: 1,
+        name: "recorded",
+        use: profile,
+        record: blocks,
+      });
+      const text = await readFile(blocks, "utf8");
+      expect(text).toMatch(/^f hot [1-9]\d* [1-9]\d*$/m);
+      expect(text).toMatch(/^f rare 0 0$/m);
+
+      // Without the block counts rare keeps no counts; with them it is cold
+      // code. added, which the block counts do not name, keeps no counts.
+      const [plain] = await emit(dir, rareProgram(), { outputs: 1, name: "plain", use: profile });
+      const [cold] = await emit(dir, rareProgram(true), {
+        outputs: 1,
+        name: "cold",
+        use: profile,
+        blocks,
+      });
+      expect(await sectionOf(plain!, "rare")).toBe(".text");
+      expect(await sectionOf(cold!, "rare")).toMatch(/^\.text\.unlikely/);
+      expect(await sectionOf(cold!, "added")).toBe(".text");
+      expect(await sectionOf(cold!, "hot")).toMatch(/^\.text\.hot/);
+      expect(await run(await link(dir, [cold!], "cold"), 2)).toBe(rareExit(2));
     });
 
     test("block counts need a profile and a file that parses", async () => {
