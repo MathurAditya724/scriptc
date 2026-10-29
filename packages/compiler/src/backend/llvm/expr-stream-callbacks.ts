@@ -279,8 +279,6 @@ export function streamDoneFnFor(
   host.declare(
     `declare void @${entry}(ptr, ptr${twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
   );
-  host.declare(`declare ptr @scr_box_get_ref(ptr)`);
-  host.declare(`declare void @scr_stream_release_v(ptr)`);
   host.declare(`declare ptr @scr_error_retain_v(ptr)`);
   host.declare(`declare void @scr_union_release(ptr)`);
   const params = [
@@ -295,7 +293,10 @@ export function streamDoneFnFor(
     ...(twoSlot ? [`  %bslot = alloca ptr`, `  %sslot = alloca ptr`] : []),
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
-    `  %s = call ptr @scr_box_get_ref(ptr %bx) ; the stream, +1`,
+    // the stream, borrowed: the box holds it, and the closure (alive for
+    // the call) holds the box
+    `  %sp = getelementptr inbounds %ScrBox, ptr %bx, i64 0, i32 5`,
+    `  %s = load ptr, ptr %sp`,
     `  store ptr null, ptr %eslot`,
     ...(twoSlot ? [`  store ptr null, ptr %bslot`, `  store ptr null, ptr %sslot`] : []),
   ];
@@ -347,7 +348,6 @@ export function streamDoneFnFor(
   } else {
     d.push(`  call void @${entry}(ptr %s, ptr %ev) ; moves err; borrows s`);
   }
-  d.push(`  call void @scr_stream_release_v(ptr %s)`);
   if (errT !== undefined) d.push(`  call void ${releaseSym(host.shapeHost, errT)}(ptr %e)`);
   if (dataT !== undefined && isRefCounted(dataT))
     d.push(`  call void ${releaseSym(host.shapeHost, dataT)}(ptr %d)`);
@@ -868,18 +868,46 @@ export function streamCbThunkFor(
       host.declare(`declare void @scr_dyn_release(ptr)`);
       host.declare(`declare zeroext i1 @scr_exc_pending()`);
       if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+      // An object-mode write without an encoding argument passes
+      // undefined: a pointer union whose unit arm is undefined holds it as
+      // the null pointer, so that case skips the conversion.
+      const pointer = p.kind === "union" ? host.nullableUnions.get(p.unionId) : null;
+      const undefinedIsNull =
+        pointer !== null &&
+        p.kind === "union" &&
+        host.unionsById.get(p.unionId)?.arms[pointer.unitTag]?.kind === "undefinedT";
+      if (undefinedIsNull) {
+        host.declare(`declare zeroext i1 @scr_stream_chunk_encoding_undefined(ptr)`);
+        d.push(
+          `  br label %etchk${i}`,
+          `etchk${i}:`,
+          `  %eu${i} = call zeroext i1 @scr_stream_chunk_encoding_undefined(ptr %s)`,
+          `  br i1 %eu${i}, label %etok${i}, label %etconv${i}`,
+          `etconv${i}:`,
+        );
+      }
       d.push(
         `  %ev${i} = call ptr @scr_stream_chunk_encoding_value(ptr %s)`,
         `  %et${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %ev${i}, ptr null)`,
         `  call void @scr_dyn_release(ptr %ev${i})`,
         `  %etbad${i} = call zeroext i1 @scr_exc_pending()`,
-        `  br i1 %etbad${i}, label %etfail${i}, label %etok${i}`,
+        `  br i1 %etbad${i}, label %etfail${i}, label %${undefinedIsNull ? "etconvok" : "etok"}${i}`,
         `etfail${i}:`,
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
-        `etok${i}:`,
       );
-      passed.push(`${ty} %et${i}`);
+      if (undefinedIsNull) {
+        d.push(
+          `etconvok${i}:`,
+          `  br label %etok${i}`,
+          `etok${i}:`,
+          `  %etv${i} = phi ptr [ null, %etchk${i} ], [ %et${i}, %etconvok${i} ]`,
+        );
+        passed.push(`${ty} %etv${i}`);
+      } else {
+        d.push(`etok${i}:`);
+        passed.push(`${ty} %et${i}`);
+      }
     } else if (isErrPos) {
       // destroy's error argument: `Error | null` — wrap type-directedly.
       // The finished/pipeline callback ("e") may declare `Error | null |
