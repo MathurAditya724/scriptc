@@ -793,6 +793,78 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(changed).toHaveLength(1);
   });
 
+  test("the entry line gives the top-level code and its chain a partition of their own", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-entry-"));
+    dirs.push(dir);
+    // Eight exported functions of about 7 KiB, and the marked top-level
+    // function @top, which only main calls, so it follows main.
+    const count = 8;
+    const body = (header: string, lines: number, ret: string) => [
+      header,
+      ...Array.from(
+        { length: lines },
+        (_, step) => `  %v${step} = add i64 ${step === 0 ? "%value" : `%v${step - 1}`}, 1`,
+      ),
+      ret.replace("LAST", `%v${lines - 1}`),
+      "}",
+    ];
+    const source = (marked: boolean) => {
+      const lines: string[] = [];
+      for (let index = 0; index < count; index++)
+        lines.push(
+          ...body(`define i64 @big${index * 4}(i64 %value) noinline {`, 280, "  ret i64 LAST"),
+        );
+      if (marked) lines.push("; scriptc-entry");
+      lines.push(
+        ...body("define internal i64 @top(i64 %value) noinline {", 280, "  ret i64 LAST"),
+        "define i32 @main() {",
+        "  %t = call i64 @top(i64 0)",
+      );
+      for (let index = 0; index < count; index++)
+        lines.push(
+          `  %r${index} = call i64 @big${index * 4}(i64 ${index})`,
+          `  %s${index} = add i64 ${index === 0 ? "%t" : `%s${index - 1}`}, %r${index}`,
+        );
+      lines.push(
+        `  %low = urem i64 %s${count - 1}, 251`,
+        "  %code = trunc i64 %low to i32",
+        "  ret i32 %code",
+        "}",
+      );
+      return lines.join("\n") + "\n";
+    };
+    let total = 280;
+    for (let index = 0; index < count; index++) total += index + 280;
+    const placed = async (objects: string[]) => {
+      const where = new Map<string, number>();
+      for (const [index, object] of objects.entries()) {
+        const { stdout } = await execFileAsync("nm", ["--defined-only", object]);
+        for (const line of stdout.split("\n")) {
+          const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(big\d+|top|main)$/.exec(line.trim());
+          if (defined !== null) where.set(defined[1]!, index);
+        }
+      }
+      return where;
+    };
+    for (const marked of [false, true]) {
+      const objects = await emit(dir, source(marked), {
+        outputs: 4,
+        optLevel: "0",
+        name: marked ? "marked" : "plain",
+      });
+      expect(await exitCode(dir, objects, marked ? "marked" : "plain")).toBe(total % 251);
+      const where = await placed(objects);
+      expect(where.get("top")).toBe(where.get("main"));
+      const beside = [...where].filter(
+        ([name, home]) => name.startsWith("big") && home === where.get("top"),
+      );
+      // Without the line, balancing places other functions beside main's
+      // chain; with it, none.
+      if (marked) expect(beside).toEqual([]);
+      else expect(beside.length).toBeGreaterThan(0);
+    }
+  });
+
   test("a table written one element per line keeps the text partitioner and its reuse", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-table-"));
     dirs.push(dir);

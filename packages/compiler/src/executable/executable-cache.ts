@@ -170,6 +170,8 @@ export interface EarlyExecutableCacheOptions {
   libnodeIdentity?: () => string | undefined;
   /** Omitted unless --large-pages is set. */
   largePages?: true;
+  /** Omitted unless --exceptions=rare is set. */
+  exceptions?: "rare";
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
   targetCpu?: TargetCpu;
   /** Omitted for builds without runtime CPU dispatch. */
@@ -339,6 +341,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
     ...(options.largePages ? ["large-pages"] : []),
+    ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
     ...cpuDispatchKeyParts(options.cpuDispatch),
     ...(options.profile !== undefined ? [options.profile] : []),
@@ -388,6 +391,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
   if (options.largePages) hash.update("large-pages\0");
+  if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
   for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);

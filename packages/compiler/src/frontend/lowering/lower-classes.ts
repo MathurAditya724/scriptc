@@ -127,6 +127,7 @@ import {
 import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./lowerer.js";
 import { islandValueOrigin } from "../node-api-import.js";
 import { nativeSubclassOfIslandDiag } from "../../diagnostics/diagnostic.js";
+import { isForeignType, isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { declarationGroupKey } from "./type-failure.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
@@ -1652,6 +1653,8 @@ export function guaranteedDecorationThrow(
 }
 
 export function collectClassShape(lowerer: Lowerer, decl: ts.ClassDeclaration): void {
+  // A native class extending an island class has no native shape (NI-5b).
+  if (isIslandSubclassDecl(decl)) return;
   if (
     lowerer.classes.has(lowerer.classNamer(decl)) ||
     lowerer.collectingClassDeclarations.has(decl)
@@ -2214,7 +2217,12 @@ export function collectClassShapeInner(
           continue;
         }
       }
-      if (t && islandValueOrigin(lowerer.program, t.expression)) {
+      if (
+        t &&
+        (islandValueOrigin(lowerer.program, t.expression) ||
+          (lowerer.nodeIslands !== null &&
+            isForeignType(lowerer.nodeIslands, lowerer.typeOf(t.expression), lowerer.checker)))
+      ) {
         lowerer.pushDiag(nativeSubclassOfIslandDiag(locOf(t)));
         throw new PoisonError();
       }

@@ -40,6 +40,8 @@ struct Symbol {
   std::vector<unsigned> Calls;
   // A variable defined with "constant", whose loads the optimizer can fold.
   bool Constant = false;
+  // A function the emitter marks as the entry module's top-level code.
+  bool Entry = false;
   std::vector<unsigned> Metadata;
   // The source-module group the emitter wrote before this definition, or
   // empty.
@@ -166,8 +168,10 @@ void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
 // function bytes: each root probes the next partitions in turn, keeping the
 // first with room, else its own. An edit then recompiles about a mean
 // partition, and the largest partition, which bounds a cold build, stays
-// near the mean unless one root is larger. Roots and their bytes, and so
-// placement, depend only on the module text.
+// near the mean unless one root is larger. The roots of the entry module's
+// top-level code are placed first, and their partitions take no other root,
+// so an edit of the program's top level recompiles only that code. Roots
+// and their bytes, and so placement, depend only on the module text.
 void balanceRoots(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
                   ArrayRef<char> Live, unsigned Count) {
   if (Count >= MinGroupedPartitions)
@@ -193,27 +197,49 @@ void balanceRoots(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
   });
   uint64_t Cap = Total * 5 / 4 / Count;
   std::vector<uint64_t> Load(Count, 0);
+  // Partitions that take no further root.
+  std::vector<char> Closed(Count, 0);
   DenseMap<unsigned, unsigned> Placed;
-  // Roots of more than half the cap are placed first, in name order, so
-  // that small roots fill around them; the others follow in name order.
+  // A root without room anywhere stays in the first open partition from its
+  // own.
   auto Place = [&](unsigned Root) {
     uint64_t Bytes = RootBytes[Root];
     unsigned Home = stableHash(Symbols[Root].Name) % Count, Chosen = Home;
-    for (unsigned K = 0; K < Count; ++K) {
+    bool Found = false;
+    for (unsigned K = 0; K < Count && !Found; ++K) {
       unsigned P = (Home + K) % Count;
-      if (Load[P] + Bytes <= Cap) {
+      if (!Closed[P] && Load[P] + Bytes <= Cap) {
         Chosen = P;
-        break;
+        Found = true;
+      }
+    }
+    for (unsigned K = 0; K < Count && !Found; ++K) {
+      unsigned P = (Home + K) % Count;
+      if (!Closed[P]) {
+        Chosen = P;
+        Found = true;
       }
     }
     Load[Chosen] += Bytes;
     Placed[Root] = Chosen;
   };
+  DenseSet<unsigned> EntryRoots;
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Entry && Live[I])
+      EntryRoots.insert(Roots[I]);
+  // Entry roots first, each closing its partition, then roots of more than
+  // half the cap, in name order, so that small roots fill around them; the
+  // others follow in name order.
   for (unsigned Root : Order)
-    if (RootBytes[Root] * 2 > Cap)
+    if (EntryRoots.contains(Root)) {
+      Place(Root);
+      Closed[Placed[Root]] = 1;
+    }
+  for (unsigned Root : Order)
+    if (!EntryRoots.contains(Root) && RootBytes[Root] * 2 > Cap)
       Place(Root);
   for (unsigned Root : Order)
-    if (RootBytes[Root] * 2 <= Cap)
+    if (!EntryRoots.contains(Root) && RootBytes[Root] * 2 <= Cap)
       Place(Root);
   for (unsigned I = 0; I < Symbols.size(); ++I)
     if (Symbols[I].Kind == SymbolKind::Function && Live[I])
@@ -500,9 +526,12 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
 
   // The emitter writes "; scriptc-group <key>" before the definitions of each
   // source function; the group applies until the next such line, and an
-  // empty key ends it.
+  // empty key ends it. It writes "; scriptc-entry" before the definition of
+  // the entry module's top-level code.
   constexpr StringRef GroupLine = "; scriptc-group";
+  constexpr StringRef EntryLine = "; scriptc-entry";
   StringRef Group;
+  bool Entry = false;
   size_t Pos = 0;
   while (Pos < Text.size()) {
     size_t End = Text.find('\n', Pos);
@@ -516,11 +545,15 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
                (Line.size() == GroupLine.size() ||
                 Line[GroupLine.size()] == ' ')) {
       Group = Line.drop_front(GroupLine.size()).trim();
+    } else if (Line.trim() == EntryLine) {
+      Entry = true;
     } else if (Line.starts_with("define ")) {
       Symbol S;
       S.Kind = SymbolKind::Function;
       S.Header = Line;
       S.Group = Group;
+      S.Entry = Entry;
+      Entry = false;
       if (!parseFunctionHeader(Line, S))
         return std::nullopt;
       // The emitter indents every body line, so the first line that is

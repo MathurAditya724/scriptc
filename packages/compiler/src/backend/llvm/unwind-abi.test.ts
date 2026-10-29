@@ -141,6 +141,40 @@ for (let i = -1; i < 2; i++) {
   }
 });
 
+test("with rareExceptions, recursive functions and those near a throw unwind; throwing ones keep the flag", async () => {
+  const source = `
+function leaf(n: number): number {
+  if (n < 0) throw new RangeError("negative");
+  return n;
+}
+function one(n: number): number { return leaf(n) + 1; }
+function two(n: number): number { return one(n) + 1; }
+function walk(n: number, depth: number): number {
+  const parts: string[] = ["w" + n];
+  const r = depth === 0 ? two(n) : walk(n, depth - 1);
+  return r + parts.length;
+}
+for (let i = -1; i < 2; i++) {
+  try { console.log(walk(i, 3)); } catch (e) { console.log((e as Error).message); }
+}
+`;
+  const mod = await moduleFor(source);
+  const common = emitLlvmModule(mod, LINUX);
+  const rare = emitLlvmModule(mod, { ...LINUX, rareExceptions: true });
+  for (const [caller, callee] of [
+    ["two", "one"],
+    ["walk", "walk"],
+    ["walk", "two"],
+  ] as const) {
+    const invoke = new RegExp(`invoke double @sc_b?f_[^(]*${callee}`);
+    expect(body(common, caller)).not.toMatch(invoke);
+    expect(body(rare, caller)).toMatch(invoke);
+  }
+  // one raises what leaf returns pending; leaf throws, so it keeps the flag.
+  expect(body(rare, "one")).toContain("call void @scr_unwind_raise()");
+  expect(body(rare, "one")).not.toMatch(/invoke double @sc_b?f_[^(]*leaf/);
+});
+
 test("without the option, and off Linux, emission keeps the pending-flag ABI", async () => {
   const mod = await moduleFor(SOURCE);
   for (const options of [{}, { targetTriple: "arm64-apple-macosx14.0.0", unwindAbi: true }]) {

@@ -69,17 +69,17 @@ const KNOWN: Record<string, Known> = {
   },
   // require() inside a function.
   "island-web-plumbing": { run: "SC1090" },
+  // The package's require() edges run in a Node island and match Node; its
+  // import() of a specifier that resolves to nothing is a deferred SC2012
+  // fence instead of Node's ERR_MODULE_NOT_FOUND rejection.
   "lazy-traps": {
     divergence:
-      "an island module loaded by path lists itself twice in MODULE_NOT_FOUND require stacks",
+      "an import() whose literal specifier resolves to nothing is fenced with SC2012 instead of rejecting like Node",
   },
   "misc-shims": { run: "SC1090" },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
-  "node24-commonjs-metadata": {
-    divergence:
-      "a Node island (its require.cache use needs the runtime) loads its entry with itself as the CJS parent, so require stacks list it twice",
-  },
+  "node24-commonjs-metadata": { island: true },
   "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
@@ -214,13 +214,25 @@ async function build(entry: string, shapeOverlay: boolean | undefined): Promise<
   };
 }
 
-async function expectMatchesNode(c: NpmCase, binary: string): Promise<void> {
+/** A Node island's modules run from the module tree the program ships
+ * (node-islands/modules.ts), extracted under the user's cache directory, so
+ * a path they print names the tree's copy. The tree's root is the fixtures'
+ * npm directory: such a path reads as the fixture's own. */
+function fixturePaths(out: Buffer): Buffer {
+  const tree = /(?:\/[^\s"'`/]+)+\/scriptc\/node-islands\/[0-9a-f]{64}/g;
+  return Buffer.from(out.toString("utf8").replace(tree, join(fixturesRoot, "npm")), "utf8");
+}
+
+async function expectMatchesNode(c: NpmCase, binary: string, island = false): Promise<void> {
   const cwd = dirname(c.entry);
   for (const argv of c.argvs ?? [[]]) {
-    const [nodeRes, nativeRes] = await Promise.all([
+    const [nodeRes, ran] = await Promise.all([
       runBinary(process.execPath, [c.entry, ...argv], cwd),
       runBinary(binary, argv, cwd),
     ]);
+    const nativeRes = island
+      ? { ...ran, stdout: fixturePaths(ran.stdout), stderr: fixturePaths(ran.stderr) }
+      : ran;
     const label = argv.join(" ");
     if (!nodeRes.stdout.equals(nativeRes.stdout)) {
       expect(nativeRes.stdout.toString("utf8"), label).toBe(nodeRes.stdout.toString("utf8"));
@@ -265,7 +277,7 @@ export function defineNpmSuite(options: { label: string; shapeOverlay?: boolean 
             return;
           }
           if (!built.ok) throw new Error(`npm fixture failed to compile:\n${built.text}`);
-          await expectMatchesNode(c, built.binary);
+          await expectMatchesNode(c, built.binary, true);
         }, 120_000);
         continue;
       }

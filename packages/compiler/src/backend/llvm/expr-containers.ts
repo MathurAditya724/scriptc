@@ -1327,7 +1327,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   let unionKeys = "null";
-  if (mapKeyKindNum(key, arms) === 7) {
+  if (mapKeyKindNum(key, arms) === 7 && host.nullableUnions.of(key) === null) {
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
@@ -1346,9 +1346,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
-  const kind =
-    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
+  // pointer (boxedUnionIds).
+  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).

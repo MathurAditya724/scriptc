@@ -561,6 +561,10 @@ export interface LlvmTargetOptions {
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
+  /** Unions emitted as tagged boxes whatever their arms, for tests of the
+   * box paths: in a program, a union that has a pointer representation
+   * (nullable-unions.ts) never holds a box. */
+  boxedUnions?: ReadonlySet<string>;
   /** Select the WASI libc entry-point convention. */
   wasi?: boolean;
   /** Library archive assembly may move the volatile identity getters into a
@@ -594,6 +598,9 @@ export interface LlvmTargetOptions {
   /** The files of the program's Node island module tree, in manifest order
    * (node-islands/modules.ts), when the executable carries the tree. */
   nodeIslandModuleData?: Uint8Array;
+  /** The program throws rarely (`--exceptions=rare`): recursive functions
+   * and those near a `throw` also unwind (unwindAbiFunctions). */
+  rareExceptions?: boolean;
   /** Translated WebAssembly memories check bounds explicitly instead of
    * relying on guard pages (wasm-modules.ts wasmBoundsChecks). */
   wasmBoundsChecks?: boolean;
@@ -2086,6 +2093,7 @@ export class LlEmitter {
       options.debugSources === undefined,
       this.nodeIndex,
       options.pointerBits !== 32,
+      options.boxedUnions,
     );
     this.heapCensus = heapCensusOf(mod, this.nullableUnions);
     for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
@@ -2193,7 +2201,13 @@ export class LlEmitter {
       (options.targetTriple
         ? /-linux-(?:gnu|musl)/.test(options.targetTriple)
         : process.platform === "linux")
-        ? unwindAbiFunctions(mod, this.mayThrow, options.unwindExcluded, this.nodeIndex)
+        ? unwindAbiFunctions(
+            mod,
+            this.mayThrow,
+            options.unwindExcluded,
+            this.nodeIndex,
+            options.rareExceptions === true,
+          )
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
@@ -6612,7 +6626,11 @@ export class LlEmitter {
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
-    if (loop) this.loopDepth++;
+    const builder = this.B;
+    if (loop) {
+      this.loopDepth++;
+      builder.loopDepth++;
+    }
     // An int32 kind loop's fast-copy write leaves for its resume point.
     const kindResume = this.int32KindResume;
     this.int32KindResume = this.int32Kinds?.resume.get(s) ?? null;
@@ -6621,7 +6639,10 @@ export class LlEmitter {
     } finally {
       this.B.debugLocation = previous;
       this.int32KindResume = kindResume;
-      if (loop) this.loopDepth--;
+      if (loop) {
+        this.loopDepth--;
+        builder.loopDepth--;
+      }
     }
   }
   private emitStmtBody(s: IrStmt): void {
