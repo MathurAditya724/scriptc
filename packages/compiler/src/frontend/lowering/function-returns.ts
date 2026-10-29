@@ -164,7 +164,33 @@ export function declaredReturnType(
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
-  const retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  // An ASYNC object-literal method with no return annotation and a
+  // contextual signature takes its return from that signature, as an async
+  // arrow does: the body's `return` builds at the contextually typed
+  // literal, so the checker's own inferred literal (narrower than the
+  // contextual record) could never hold it.
+  if (
+    ts.isMethodDeclaration(decl) &&
+    ts.isObjectLiteralExpression(decl.parent) &&
+    decl.type === undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true
+  ) {
+    const contextual = lowerer.checker.getContextualType(decl.parent);
+    const slot =
+      contextual === undefined || (!ts.isIdentifier(decl.name) && !ts.isStringLiteral(decl.name))
+        ? undefined
+        : lowerer.checker.getPropertyOfType(
+            lowerer.checker.getNonNullableType(contextual),
+            decl.name.text,
+          );
+    const signatures =
+      slot === undefined
+        ? []
+        : lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(slot));
+    if (signatures.length === 1)
+      retTsType = lowerer.checker.getReturnTypeOfSignature(signatures[0]!);
+  }
   // An inferred null/undefined return in JS can read a mutable checked-value
   // field. Keep the actual value instead of restricting it to the initializer.
   if (
