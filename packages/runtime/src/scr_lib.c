@@ -5126,6 +5126,12 @@ bool scr_process_is_tty(double fd) {
   return isatty((int)fd) != 0;
 }
 
+/* tty.isatty as a function value (borrowed argument): a value that is not a
+ * number answers false and is never coerced, as Node's integer test does. */
+bool scr_process_is_tty_value(const ScrDyn *fd) {
+  return fd != NULL && fd->kind == SCR_DYN_NUM && scr_process_is_tty(fd->v.num);
+}
+
 /* Terminal geometry for process.stdout/stderr.columns/rows: ioctl(TIOCGWINSZ) on
  * the stream's fd, exactly Node's tty.WriteStream source of truth. A
  * non-TTY stream, or a terminal that refuses the ioctl, answers -1 and

@@ -4771,6 +4771,16 @@ function stdlibGlobalTokenDestructure(
     ) {
       // A data member reads its value once, exactly like the spelled
       // `process.<member>` read the destructuring performs.
+    } else if (
+      globalName === "process" &&
+      propName === "cwd" &&
+      (value = lowerer.lowerBuiltinCallableValue(
+        { module: "process", member: propName },
+        locOf(el),
+      )) !== null
+    ) {
+      // process.cwd reads the directory when it is called, so the detached
+      // function is the same one every other spelling reads.
     } else {
       lowerer.unsupported(
         "SC1031",
