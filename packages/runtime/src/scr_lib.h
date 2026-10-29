@@ -575,6 +575,10 @@ int scr_fs_raw_close(int fd);
 typedef void (*ScrWorkFn)(void *payload);
 void scr_work_submit(void *payload, ScrWorkFn work, ScrWorkFn after,
                      ScrWorkFn destroy);
+/* A job whose work already ran on the main runtime thread: `after` runs on
+ * the next loop turn, as a pool job's completion does, and `destroy`
+ * follows it. */
+void scr_work_submit_done(void *payload, ScrWorkFn after, ScrWorkFn destroy);
 
 /* fs.rename: the syscall is submitted to a native worker immediately and
  * its error-first callback fires on a later event-loop turn through an
