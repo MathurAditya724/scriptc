@@ -133,7 +133,11 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { initializedCollectionType } from "./js-collection-types.js";
-import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
+import {
+  lowerMapSeedNew,
+  lowerSetSeedNew,
+  mapFromSeedValue,
+} from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
@@ -11061,6 +11065,35 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           tsType = ctx;
           mapped = ctxMapped;
         }
+      }
+      // `new Map(source)` the checker types `Map<any, any>` because the
+      // source's checker type joins an untyped `new Map()` with a typed map
+      // (a union of map types): the copy takes the layout the source value
+      // actually has.
+      if (
+        seedArg &&
+        !entriesLit &&
+        mapped?.kind === "map" &&
+        mapped.key.kind === "dyn" &&
+        mapped.value.kind === "dyn" &&
+        (expr.typeArguments?.nodes.length ?? 0) === 0 &&
+        !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        lowerer.mapTypeOf(lowerer.typeOf(seedArg))?.kind === "union"
+      ) {
+        const source = lowerer.lowerExpr(seedArg);
+        if (
+          source.type.kind === "map" &&
+          source.type.key.kind !== "dyn" &&
+          source.type.value.kind !== "dyn"
+        ) {
+          const copied = mapFromSeedValue(lowerer, source, source.type);
+          if (copied) return copied;
+        }
+        lowerer.noLowering(
+          "new Map(entries)",
+          expr,
+          "a source whose map layouts differ (give the empty `new Map()` its type arguments)",
+        );
       }
       if (seedArg && !entriesLit && mapped?.kind === "map") {
         const seeded = lowerMapSeedNew(lowerer, seedArg, mapped);
