@@ -105,6 +105,17 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
   RlList *l = &rl->ev[ev];
   size_t n = l->n;
   if (n == 0) return;
+  /* One persistent line listener (the usual 'line' handler): no snapshot
+   * and no once-listener pass. The retain keeps the closure alive if the
+   * listener removes itself. */
+  if (n == 1 && ev == RL_EV_LINE && !l->v[0].once && !l->v[0].iter) {
+    RlEntry e = l->v[0];
+    if (scr_exc_pending()) return;
+    scr_closure_retain(e.cb);
+    ((ScrRlLineFn)e.fn)(e.cb, scr_str_retain(line));
+    scr_closure_release(e.cb);
+    return;
+  }
   /* Most events have a listener or two: their snapshot stays on the stack. */
   RlEntry small[4];
   RlEntry *snap = n <= 4 ? small : malloc(n * sizeof *snap);
