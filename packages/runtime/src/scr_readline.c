@@ -339,8 +339,10 @@ static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
   }
   rl->line_len = 0;
   if (start < n) scr_rl_buf_append(rl, p + start, n - start);
+  /* Node delivers every line the chunk split, also after a line listener
+   * closes the interface; an exception a listener throws ends the chunk. */
   for (size_t i = 0; i < n_lines; i++) {
-    if (rl->closed || scr_exc_pending()) {
+    if (scr_exc_pending()) {
       scr_str_release(lines[i]);
       continue;
     }
