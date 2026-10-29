@@ -95,7 +95,8 @@ void scr_box_set_ref(ScrBox *b, void *v); /* releases old, owns new */
 #define SCR_CLOSURE_KIND_CHECKED_ADAPTER 8u /* a checked callable adapter: the callable is in caps[0] */
 /* The body never observes the ambient receiver (the `this` an unbound call
  * binds), so compiled callers skip the receiver bracket around an indirect
- * call. Set only by the compiler; the kind proper is
+ * call. Set by the compiler, and by the runtime on the stream completion
+ * callbacks, whose thunks never read it; the kind proper is
  * function_kind & SCR_CLOSURE_KIND_MASK. */
 #define SCR_CLOSURE_KIND_RECEIVER_FREE 16u
 #define SCR_CLOSURE_KIND_MASK 15u
