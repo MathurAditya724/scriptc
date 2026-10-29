@@ -86,7 +86,7 @@ import {
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject } from "../lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
@@ -562,6 +562,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);
+      // `import { posix, win32 } from "node:path"` as VALUES: the platform
+      // namespaces are members of the path module object, so the named
+      // import reads the same checked-dynamic module value the property
+      // form (path.posix) lowers to.
+      if (
+        (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
+        (bi.member === "posix" || bi.member === "win32")
+      ) {
+        return pathModuleValue(lowerer, `path/${bi.member}`, loc);
+      }
       // module.builtinModules — the baked Node v24 list, a fresh
       // string[] per read.
       if (bi.module === "module" && bi.member === "builtinModules") {

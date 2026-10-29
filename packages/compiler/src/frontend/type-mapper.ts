@@ -1087,6 +1087,8 @@ export function formatIrType(
         return append("bigint");
       case "stats":
         return append("Stats");
+      case "bigintStats":
+        return append("BigIntStats");
       case "fileHandle":
         return append("FileHandle");
       case "dir":
@@ -1649,6 +1651,27 @@ export function isLegacyUrlSymbol(
  * (errno, dlopen, priority) and SignalConstants, and the fallback's twins:
  * the runtime's checked-dynamic constants object, whose members vary by
  * platform. */
+/** True for node:path's platform-specific namespaces ("path/posix",
+ * "path/win32"). Their values are the path module object, so they map to
+ * the checked-dynamic module value (see pathModuleValue in
+ * lowering/lower-builtin-values.ts), not to a module declaration. */
+export function isPathPlatformNamespaceId(moduleId: string): boolean {
+  return moduleId === "builtin:path/posix" || moduleId === "builtin:path/win32";
+}
+
+/** @types/node's `PlatformPath` interface (module "path"): the declared type
+ * of `path.posix`/`path.win32`. Its values are the path module object. */
+function isPlatformPathType(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  const sym = type.getSymbol();
+  if (sym === undefined || ts.symbolName(sym) !== "PlatformPath") return false;
+  return sym.declarations.some(
+    (decl) =>
+      ts.isInterfaceDeclaration(decl) &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+      isDeclaredInAmbientModule(decl, "path"),
+  );
+}
+
 export function isOsConstantsType(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -2145,7 +2168,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
-    if (moduleId !== null) return { kind: "moduleNs", moduleId };
+    // node:path's platform namespaces (`path.posix`, `path.win32`) are
+    // ordinary objects at run time: the same module object the whole
+    // namespace lowers to (pathModuleValue). Typing them as a module
+    // namespace declaration made every value read a static type with no
+    // value lowering; the checked-dynamic module value is the honest
+    // type, and a union with a plain record arm collapses onto it.
+    if (moduleId !== null && !isPathPlatformNamespaceId(moduleId))
+      return { kind: "moduleNs", moduleId };
+    if (moduleId !== null) return DYN;
   }
   // A TypeScript object literal that spreads a checked-dynamic value
   // (`{ ...requestOptions, path, timeout }`): its keys are the source's
@@ -2193,6 +2224,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  // @types/node declares the platform-path namespace value as the
+  // `PlatformPath` interface of module "path"; its values ARE the path
+  // module object (the checked-dynamic module value).
+  if (isPlatformPathType(type, ctx)) return DYN;
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // The WebAssembly API's values have the checked-dynamic representation, so
   // declarations that merely mention them compile; each reached use of the
@@ -3682,6 +3717,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "stats" };
+  }
+  // fs.BigIntStats: the SAME snapshot handle under Node's bigint member
+  // table (`statSync(p, { bigint: true })`). Declared by @types/node as
+  // `class BigIntStats` in "fs"; the fallback declarations keep the class
+  // shape too. Provenance-checked like Stats.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "BigIntStats" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return { kind: "bigintStats" };
   }
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.

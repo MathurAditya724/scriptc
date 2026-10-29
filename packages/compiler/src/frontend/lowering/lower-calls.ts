@@ -3707,7 +3707,17 @@ function lowerDynReceiverMethodCall(
     const binding = ts.isIdentifier(access.expression)
       ? lowerer.builtinImportOf(access.expression)
       : null;
-    if (binding?.module !== "worker_threads" || binding.member !== "parentPort") return null;
+    const parentPort = binding?.module === "worker_threads" && binding.member === "parentPort";
+    // node:path's platform namespaces resolve to ambient declarations the
+    // same way, but their VALUE is the checked-dynamic module object (the
+    // whole namespace), so `win32.join(...)` takes this receiver path
+    // exactly like `path.win32.join(...)`.
+    const pathNamespace =
+      (binding?.module === "path" ||
+        binding?.module === "path/posix" ||
+        binding?.module === "path/win32") &&
+      (binding.member === "posix" || binding.member === "win32");
+    if (!parentPort && !pathNamespace) return null;
   }
   // Only checker-untyped receivers: `any`/`unknown`, or the `any[]` an
   // Array.isArray guard narrows them to (the value is STILL the checked-dynamic tree

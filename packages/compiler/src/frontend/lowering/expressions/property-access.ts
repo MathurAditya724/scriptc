@@ -44,6 +44,7 @@ import {
   isParseArgsDynTypeName,
 } from "../../type-mapper.js";
 import {
+  BIGINT_T,
   BOOL,
   BYTES_U8,
   DYN,
@@ -2097,6 +2098,7 @@ export function lowerIntrinsicProperty(
     kind !== "url" &&
     kind !== "searchParams" &&
     kind !== "stats" &&
+    kind !== "bigintStats" &&
     kind !== "spawnRes" &&
     kind !== "child" &&
     kind !== "bytes" &&
@@ -2252,18 +2254,31 @@ export function lowerIntrinsicProperty(
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
-  if (kind === "stats") {
+  if (kind === "stats" || kind === "bigintStats") {
+    const bigintStats = kind === "bigintStats";
     if (name === "size") {
       const receiver = lowerer.lowerExpr(expr.expression);
-      return { kind: "libCall", fn: "stats.size", args: [receiver], type: F64, loc: locOf(expr) };
+      return {
+        kind: "libCall",
+        fn: bigintStats ? "bigstats.size" : "stats.size",
+        args: [receiver],
+        type: bigintStats ? BIGINT_T : F64,
+        loc: locOf(expr),
+      };
     }
     if (Object.hasOwn(STATS_TYPE_TESTS, name)) {
-      lowerer.unsupported("SC1090", expr, `Stats methods as values (call '${name}' directly)`);
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `${bigintStats ? "BigIntStats" : "Stats"} methods as values (call '${name}' directly)`,
+      );
     }
     lowerer.noLowering(
-      `Stats.${name}`,
+      `${bigintStats ? "BigIntStats" : "Stats"}.${name}`,
       expr,
-      "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
+      bigintStats
+        ? "BigIntStats' isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported members"
+        : "isFile(), isDirectory(), isSymbolicLink(), isBlockDevice(), isCharacterDevice(), isFIFO(), isSocket(), dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs, atime, mtime, ctime, and birthtime are the supported Stats members",
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }
@@ -3474,6 +3489,26 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   return null;
 }
 
+/** Whether a receiver is a value the checker ruled UNREACHABLE (`never`),
+ * directly or through the parenthesized assertion chain that escapes it
+ * (`(x as any)`, `(x as unknown)`, `x!`). The erasure is what hides the
+ * value's stored union from the checker; the value itself still holds it. */
+function unreachableReceiver(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let node: ts.Expression = expr.expression;
+  for (;;) {
+    if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return true;
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      ts.isAssertionExpression(node)
+    ) {
+      node = node.expression;
+      continue;
+    }
+    return false;
+  }
+}
+
 /** Shared-field read `r.f` on a UNION receiver: supported exactly when
  * every arm is a record/class possessing the field with ONE shared IR
  * type — the discriminant pattern (`r.kind`, primitive) and the
@@ -3491,14 +3526,26 @@ export function lowerUnionProperty(
   const receiverIr =
     structuralReadType(lowerer, expr.expression) ??
     lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
-  if (receiverIr?.kind !== "union") return null;
+  // The checker can rule the receiver UNREACHABLE and the assertion that
+  // escapes it (`const x: never = event; (event as any).type` — the
+  // `default:` branch of a switch that exhausts every arm) erases to
+  // checked-dynamic, hiding the union the value actually holds. Node reads
+  // the member off the object it is; the arms all declare it, so the read
+  // is the shared-field read. `never` admits no reachable call site, so no
+  // reachable program changes shape.
+  const unreachable = receiverIr?.kind !== "union" && unreachableReceiver(lowerer, expr);
+  if (receiverIr?.kind !== "union" && !unreachable) return null;
   // Lower the receiver first: its runtime value can still carry the full
   // binding union even when the checker has removed several variants.
   let value = lowerer.lowerExpr(expr.expression);
   // A guard can remove several variants without selecting one record.
   // Materialize that sub-union before looking for common fields; arms
   // ruled out by the guard must not veto a field shared by the survivors.
-  if (value.type.kind === "union" && !typeEquals(value.type, receiverIr)) {
+  if (
+    receiverIr?.kind === "union" &&
+    value.type.kind === "union" &&
+    !typeEquals(value.type, receiverIr)
+  ) {
     const helper = lowerer.narrowedRetagHelper(
       expr.expression,
       value.type.unionId,

@@ -188,6 +188,9 @@ export interface CcOptions {
    * Symbol-free binaries keep their exact link line. */
   symbol?: boolean;
   bigint?: boolean;
+  /** BigIntStats member reads: compiles scr_stats_bigint.c. Every other
+   * bigint program keeps its exact link line and size. */
+  bigstats?: boolean;
   /** Records URLSearchParams use in the build identity. Its runtime unit is
    * part of the base sources because checked URL handles expose searchParams. */
   searchParams?: boolean;

@@ -94,6 +94,8 @@ export interface EarlyExecutableNativeFeatures {
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
+  bigstats?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;

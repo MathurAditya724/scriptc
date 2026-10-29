@@ -286,6 +286,7 @@ import {
   noLoweringDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
+  stdlibSnapshotValueUseDiag,
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
   unionMismatchDiag,
@@ -3378,6 +3379,16 @@ export class Lowerer {
    * checks resolve through this map (stdlibGlobalNameOf), declarations
    * emit nothing. */
   readonly stdlibGlobalAliases = new Map<ts.Symbol, string>();
+  /** The TypeScript declarations registered in stdlibGlobalAliases: the
+   * global each one names and its own name node. Their declarations emit
+   * nothing, so a read that needs the VALUE reports at the declaration
+   * (stdlibGlobalAliasDecl, rejectUnresolvedSymbol) instead of compiling
+   * it away. An unread snapshot stays elided: reading a global has no
+   * side effects. */
+  readonly stdlibGlobalAliasDecls = new Map<ts.Symbol, { alias: string; name: ts.Identifier }>();
+  /** Snapshots whose declaration-side refusal already reported (one
+   * declaration, one report). */
+  private readonly stdlibSnapshotReported = new Set<ts.Symbol>();
   /** The stdlibGlobalAliases bound through a cast of the global object
    * (`(globalThis as { Buffer?: B }).Buffer`). Their static type is the
    * cast's, so their value reads are refused (identifiers.ts). */
@@ -4232,6 +4243,10 @@ export class Lowerer {
       checkedTable("methodLambdasInProgress", () => this.methodLambdasInProgress.size),
       checkedTable("classMethodValueSelections", () => this.classMethodValueSelections.size),
       checkedTable("stdlibGlobalAliases", () => this.stdlibGlobalAliases.size),
+      // The snapshots' own declarations and their one-report memory: both
+      // grow with stdlibGlobalAliases, one entry per registered declaration.
+      checkedTable("stdlibGlobalAliasDecls", () => this.stdlibGlobalAliasDecls.size),
+      checkedTable("stdlibSnapshotReported", () => this.stdlibSnapshotReported.size),
       checkedTable("cjsAccessorFns", () => this.cjsAccessorFns.size),
       checkedTable("cjsAccessorSnapshots", () => this.cjsAccessorSnapshots.size),
       checkedTable("cjsSnapshotReady", () => this.cjsSnapshotReady.size),
@@ -11381,6 +11396,24 @@ export class Lowerer {
     throw new PoisonError();
   }
 
+  /** The declaration-side refusal of a stdlib-global snapshot read as a
+   * VALUE (stdlibGlobalAliasDecl): report once, at the declaration's name,
+   * naming the type the program asked the compiler to hold when it has a
+   * short spelling. */
+  reportStdlibSnapshot(symbol: ts.Symbol): void {
+    const decl = this.stdlibGlobalAliasDecls.get(symbol);
+    if (decl === undefined || this.stdlibSnapshotReported.has(symbol)) return;
+    this.stdlibSnapshotReported.add(symbol);
+    const raw = panicSafe(
+      () => this.checker.typeToString(this.checker.getTypeOfSymbol(symbol)),
+      "",
+    );
+    const typeText = raw !== "" && raw.length <= 48 ? raw : undefined;
+    this.pushDiag(
+      stdlibSnapshotValueUseDiag(decl.name.text, decl.alias, typeText, locOf(decl.name)),
+    );
+  }
+
   stdlibMemberFence(access: ts.PropertyAccessExpression): void {
     return stdlibMemberFence(this, access);
   }
@@ -15528,6 +15561,18 @@ export class Lowerer {
     fallback: string,
   ): never {
     if (this.isBlockedBinding(symbol)) {
+      this.pushDiag(blockedBindingUseDiag(name, locOf(node)));
+      throw new PoisonError();
+    }
+    // A stdlib-global snapshot read as a VALUE (`return proc` for
+    // `const proc = globalThis.process`): the declaration emitted no
+    // storage — alias plumbing only serves member and call reads — and the
+    // global's own value has no lowering. The cause is the declaration, so
+    // report there (once) and cascade here, instead of the generic
+    // binding-form text that names neither.
+    if (symbol !== null && this.stdlibGlobalAliasDecls.has(symbol)) {
+      this.reportStdlibSnapshot(symbol);
+      this.blockedBindings.add(symbol);
       this.pushDiag(blockedBindingUseDiag(name, locOf(node)));
       throw new PoisonError();
     }

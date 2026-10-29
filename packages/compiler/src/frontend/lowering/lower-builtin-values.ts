@@ -426,21 +426,86 @@ const box = (value: IrExpr): IrExpr =>
   value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc: value.loc };
 
 export function pathModuleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
-  const fields: { key: IrExpr; value: IrExpr }[] = [];
-  const add = (member: string, value: IrExpr): void => {
-    fields.push({ key: strLit(member, loc), value: box(value) });
+  // node:path's namespaces are module objects: the same handle
+  // `process.getBuiltinModule("node:path")` answers. The handle caches
+  // each member (so `path.join === path.join` and a mutation through one
+  // spelling is visible through the other) and identifies the module, so
+  // `posix === path.posix` holds — the object model the platform
+  // namespaces need when they are VALUES (`const api = win32`).
+  return moduleValue(lowerer, module, loc);
+}
+
+/** Node's own keys of the node:path module objects (path, path.posix and
+ * path.win32), in order; `_makeLong` is the same function as
+ * toNamespacedPath. */
+const PATH_MODULE_KEYS = [
+  "resolve",
+  "normalize",
+  "isAbsolute",
+  "join",
+  "relative",
+  "toNamespacedPath",
+  "dirname",
+  "basename",
+  "extname",
+  "format",
+  "parse",
+  "matchesGlob",
+  "sep",
+  "delimiter",
+  "win32",
+  "posix",
+  "_makeLong",
+] as const;
+
+/** What a spread of a node:path namespace copies: the module object's own
+ * members in Node's order, each read through the module value, so the copy
+ * holds the same functions (`{ ...path }.join === path.join`). An ES module
+ * namespace (`import * as path`) has its keys sorted and also `default`,
+ * the module object. Members the module value does not answer (format and
+ * parse have no function values) are left out, as they are of the value. */
+export function pathModuleSpreadSource(
+  lowerer: Lowerer,
+  module: string,
+  namespace: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  const local = lowerer.declareHiddenLocal("%pathModule", DYN);
+  const value = varRef(local.id, DYN, loc);
+  const answered = (key: string): boolean =>
+    key === "default" ||
+    key === "posix" ||
+    key === "win32" ||
+    builtinModuleConstOf(lowerer, module, key) !== undefined ||
+    lowerer.lowerBuiltinCallableValue(
+      { module, member: key === "_makeLong" ? "toNamespacedPath" : key },
+      loc,
+    ) !== null;
+  const keys = (namespace ? [...PATH_MODULE_KEYS, "default"].sort() : [...PATH_MODULE_KEYS]).filter(
+    answered,
+  );
+  const fields = keys.map((key) => ({
+    key: strLit(key, loc),
+    value:
+      key === "default"
+        ? value
+        : ({
+            kind: "dynKeyGet",
+            value,
+            key: strLit(key === "_makeLong" ? "toNamespacedPath" : key, loc),
+            type: DYN,
+            loc,
+          } as IrExpr),
+  }));
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local.id, init: pathModuleValue(lowerer, module, loc), loc },
+    ],
+    result: { kind: "dynObjLit", fields, type: DYN, loc },
+    type: DYN,
+    loc,
   };
-  for (const member of Object.keys(builtinModuleFns()[module] ?? {})) {
-    const value = lowerer.lowerBuiltinCallableValue({ module, member }, loc);
-    if (value) add(member, value);
-  }
-  for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-    const value = builtinModuleConstOf(lowerer, module, member);
-    if (value !== undefined) add(member, builtinConstLit(value, loc));
-  }
-  add("posix", moduleValue(lowerer, "path/posix", loc));
-  add("win32", moduleValue(lowerer, "path/win32", loc));
-  return { kind: "dynObjLit", fields, type: DYN, loc };
 }
 
 export function utilTypesModuleValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {

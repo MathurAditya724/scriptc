@@ -4620,6 +4620,7 @@ export class LlEmitter {
       case "url":
       case "searchParams":
       case "stats":
+      case "bigintStats":
       case "fileHandle":
       case "dir":
       case "spawnRes":

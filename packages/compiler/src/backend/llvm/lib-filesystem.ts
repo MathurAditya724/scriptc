@@ -1,7 +1,7 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { DYN, F64, STATS_T, STRING, type IrExpr } from "../../ir/ir.js";
+import { DYN, F64, STRING, type IrExpr } from "../../ir/ir.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -551,9 +551,12 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (e.type.kind !== "union")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
-    const statsTag = def ? def.arms.findIndex((a) => a.kind === "stats") : -1;
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
     const undefTag = undefinedArmTag(e.type, host.unionsById);
-    if (statsTag < 0 || undefTag < 0)
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const path = host.emitExpr(e.args[0]!);
     const throws = host.emitExpr(e.args[1]!);
@@ -564,7 +567,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
     );
     host.emitPendingCheck();
-    return host.wrapNullable(raw, raw, STATS_T, statsTag, e.type, undefTag);
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
     // Dirent rows assembled inline from one scandir snapshot — the C

@@ -730,6 +730,7 @@ async function compileExecutableNative(
     emitter: features.emitter,
     symbol: features.symbol,
     bigint: features.bigint,
+    ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,
     qs: features.qs,
     utilPromisify: features.utilPromisify,
