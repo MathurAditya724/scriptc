@@ -464,6 +464,10 @@ jobs:
           name: native-linux-x64-gnu-shape-overlay
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      # The npm suites' Node island cases load Node from a libnode pack, and
+      # fail rather than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode
+        if: matrix.suite == 'npm' || matrix.suite == 'npm-static'
       - name: Run the suite with the overlay on
         run: |
           case "${{ matrix.suite }}" in
