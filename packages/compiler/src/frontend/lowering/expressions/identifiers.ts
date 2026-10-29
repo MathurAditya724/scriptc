@@ -1,5 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
-import { globalMemberValue } from "../global-values.js";
+import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -825,6 +825,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
+      const untyped = tsUntypedGlobalValue(lowerer, expr, canonical, loc);
+      if (untyped !== null) return untyped;
       // The families with a WHY: each hint states what makes the
       // surface genuinely non-static (or what to use instead).
       const globalHints: Record<string, string | undefined> = {
