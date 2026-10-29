@@ -823,12 +823,25 @@ export interface BuiltinModuleFn {
   /** The function value's `length` when it is not the count of its
    * required value parameters (`Math.max`'s 2 over its rest pack). */
   valueLength?: number;
+  /** The order Node validates named value parameters in, when it is not
+   * the parameter order (basename checks its suffix first). */
+  valueOrder?: readonly number[];
+  /** The runtime entry point an untyped caller's adapter calls with every
+   * argument as given, when it validates them itself (resolve's last-first
+   * walk) or the value has no typed form (`only`: parse's record result,
+   * format's untyped pathObject). `args` are constants passed after the
+   * arguments (the win32 flag of an entry both path families share). */
+  checked?: { fn: IrLibFn; args: readonly boolean[]; result?: IrType; only?: true };
 }
 
+/** `name` is the argument name Node's validator reports
+ * (ERR_INVALID_ARG_TYPE's 'The "path" argument ...'): the adapter accepts
+ * any value there and validates it, so a string parameter arrives checked
+ * and a dyn one reaches its valueFn as given. */
 export type BuiltinValueParam =
-  | { mode: "required"; type: IrType }
-  | { mode: "optional"; type: IrType; defaultValue: string | number | undefined }
-  | { mode: "rest"; type: IrType };
+  | { mode: "required"; type: IrType; name?: string }
+  | { mode: "optional"; type: IrType; defaultValue: string | number | undefined; name?: string }
+  | { mode: "rest"; type: IrType; name?: string };
 
 /** The common first-class shape for builtin functions whose supported
  * source signature is already exactly the fixed native ABI. Keeping the
@@ -930,26 +943,27 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "path" }],
   },
   resolve: {
     fn: "path.resolve",
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "paths" }],
+    checked: { fn: "path.resolveValue", args: [false] },
   },
   normalize: {
     fn: "path.normalize",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   dirname: {
     fn: "path.dirname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   basename: {
     fn: "path.basename",
@@ -957,48 +971,65 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     defaults: [""],
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "optional", type: STRING, defaultValue: "" },
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "optional", type: STRING, defaultValue: "", name: "suffix" },
     ],
+    valueOrder: [1, 0],
   },
   extname: {
     fn: "path.extname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   isAbsolute: {
     fn: "path.isAbsolute",
     params: [STRING],
     result: BOOL,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   relative: {
     fn: "path.relative",
     params: [STRING, STRING],
     result: STRING,
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "required", type: STRING },
+      { mode: "required", type: STRING, name: "from" },
+      { mode: "required", type: STRING, name: "to" },
     ],
   },
   toNamespacedPath: {
     fn: "path.toNamespacedPath",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
     result: BOOL,
-    valueParams: exactValueParams(STRING, STRING),
+    valueParams: [
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "required", type: STRING, name: "pattern" },
+    ],
   },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
   // mapped shapes.
-  parse: { fn: "path.parse", params: [STRING], result: VOID },
-  format: { fn: "path.format", params: [], result: STRING },
+  parse: {
+    fn: "path.parse",
+    params: [STRING],
+    result: VOID,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.parseValue", args: [false], result: DYN, only: true },
+  },
+  format: {
+    fn: "path.format",
+    params: [],
+    result: STRING,
+    valueParams: [{ mode: "required", type: DYN, name: "pathObject" }],
+    checked: { fn: "path.formatValue", args: [false], result: DYN, only: true },
+  },
 };
 
 /** The win32 twins (scr_path.c's exact port of Node-v24 path.win32):
@@ -1010,26 +1041,27 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "path" }],
   },
   resolve: {
     fn: "path.win32Resolve",
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "paths" }],
+    checked: { fn: "path.resolveValue", args: [true] },
   },
   normalize: {
     fn: "path.win32Normalize",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   dirname: {
     fn: "path.win32Dirname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   basename: {
     fn: "path.win32Basename",
@@ -1037,48 +1069,65 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     defaults: [""],
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "optional", type: STRING, defaultValue: "" },
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "optional", type: STRING, defaultValue: "", name: "suffix" },
     ],
+    valueOrder: [1, 0],
   },
   extname: {
     fn: "path.win32Extname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   isAbsolute: {
     fn: "path.win32IsAbsolute",
     params: [STRING],
     result: BOOL,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   relative: {
     fn: "path.win32Relative",
     params: [STRING, STRING],
     result: STRING,
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "required", type: STRING },
+      { mode: "required", type: STRING, name: "from" },
+      { mode: "required", type: STRING, name: "to" },
     ],
   },
   toNamespacedPath: {
     fn: "path.win32ToNamespacedPath",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
   },
   matchesGlob: {
     fn: "path.win32MatchesGlob",
     params: [STRING, STRING],
     result: BOOL,
-    valueParams: exactValueParams(STRING, STRING),
+    valueParams: [
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "required", type: STRING, name: "pattern" },
+    ],
   },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
   // mapped shapes.
-  parse: { fn: "path.win32Parse", params: [STRING], result: VOID },
-  format: { fn: "path.win32Format", params: [], result: STRING },
+  parse: {
+    fn: "path.win32Parse",
+    params: [STRING],
+    result: VOID,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.parseValue", args: [true], result: DYN, only: true },
+  },
+  format: {
+    fn: "path.win32Format",
+    params: [],
+    result: STRING,
+    valueParams: [{ mode: "required", type: DYN, name: "pathObject" }],
+    checked: { fn: "path.formatValue", args: [true], result: DYN, only: true },
+  },
 };
 
 /** util.types's own keys in Node's order (Node 24.22.0). The table is the

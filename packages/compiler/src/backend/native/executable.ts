@@ -169,9 +169,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // SCR_MUSL flag and this target-selected TU travel together.
   unit((u) => isMuslTarget(u.driver), "scr_musl.c"),
   // scr_glob.c (path.matchesGlob) compiles its segments through the
-  // regex unit and scr_idna.c (node:url's IDNA) normalizes through it,
-  // so both ride the same switch; section GC drops them from binaries
-  // that never use them.
+  // regex unit, scr_idna.c (node:url's IDNA) normalizes through it and
+  // scr_path_win32_relative.c lowercases through its case mapping, so all
+  // three ride the same switch; section GC drops them from binaries that
+  // never use them.
   unitArgs((u) =>
     u.regex
       ? [
@@ -180,6 +181,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           u.rt(join(u.rtDir, "scr_regex.c")),
           u.rt(join(u.rtDir, "scr_glob.c")),
           u.rt(join(u.rtDir, "scr_idna.c")),
+          u.rt(join(u.rtDir, "scr_path_win32_relative.c")),
           ...u.lreObjects,
         ]
       : [],

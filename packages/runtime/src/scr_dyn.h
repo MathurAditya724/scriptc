@@ -2275,6 +2275,12 @@ const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
  * error.argTypeThrow libCall). Borrows all three; always throws. */
 SCR_COLD void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const ScrDyn *got);
 SCR_COLD void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrDyn *got);
+/* validateString(value, name) for a builtin function read as a value
+ * (scr_builtin_values.c): the string (+1), or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending; strings checks each element of a rest list
+ * in order and answers them as a string[]. Borrows both. */
+ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name);
+ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name);
 /* The property flavor ("The \"options.x\" property must be ...") — the
  * option-bag validators' gate (error.propTypeThrow). Always throws. */
 SCR_COLD void scr_throw_prop_type(const ScrStr *name, const ScrStr *expected, const ScrDyn *got);

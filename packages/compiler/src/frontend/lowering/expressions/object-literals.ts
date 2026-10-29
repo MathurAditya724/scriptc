@@ -1,7 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
-import { pathModuleValue } from "../lower-builtin-values.js";
+import { pathModuleObject } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -307,7 +307,7 @@ export function lowerDynObjectLiteral(
       const builtin = lowerer.builtinNamespaceModuleOf(prop.expression);
       const raw =
         builtin === "path" || builtin === "path/posix" || builtin === "path/win32"
-          ? pathModuleValue(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
+          ? pathModuleObject(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
           : !boxValue &&
               conditionalArms &&
               (conditionalSpreadOf(prop.expression) !== null ||

@@ -63,6 +63,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   ["scr_regex.c", "regex"],
+  // path.win32.relative uses the regex unit's Unicode case mapping.
+  ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
   ["scr_assert.c", any("assert", "regex", "symbol")],

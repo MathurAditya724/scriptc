@@ -5419,6 +5419,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // A module namespace beside another value in one slot (`[path.posix,
+      // path.win32]`, a `['posix', path.posix]` table row): a namespace has
+      // no union representation, and as a value it is the runtime's module
+      // object, so the slot is checked-dynamic. A namespace or null keeps
+      // its union (a probed process.getBuiltinModule result).
+      if (
+        arms.some((a) => a.kind === "moduleNs") &&
+        arms.filter((a) => !isUnitType(a)).length > 1 &&
+        !unions.recursivePending(widened)
+      ) {
+        return DYN;
+      }
       if (
         arms.some(
           (a) =>

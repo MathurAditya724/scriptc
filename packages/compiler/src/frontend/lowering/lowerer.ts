@@ -180,6 +180,7 @@ import {
 import { assertedConversion } from "./coercions/asserted.js";
 import {
   lowerUtilTypeValue,
+  checkedNativeCallableValue,
   pathModuleValue,
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
@@ -3419,6 +3420,8 @@ export class Lowerer {
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
+  /** Typed builtin adapters with a checked twin (checkedBuiltinValue). */
+  readonly builtinCheckedValues = new Map<string, () => IrExpr>();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
    * of re-lowering, its checker type reads non-nullish (typeOf), and the
@@ -11845,7 +11848,26 @@ export class Lowerer {
       if (dyn) return dyn;
       this.badType(node, t);
     }
+    // A JavaScript binding whose inferred type holds a union of functions
+    // and arrays (a test table of `[fn, cases]` rows, or one row
+    // destructured): the checked-dynamic kind dynFallbackType gives the
+    // unmappable spellings of such tables, so the rows keep their functions'
+    // names and the destructured items their values.
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && this.mixesFunctionsWithArrays(mapped))
+      return DYN;
     return jsOpenObjectType(node, mapped, this.shapes, this.unions);
+  }
+
+  /** Whether `type`, or an array element type inside it, is a union with
+   * both a function arm and an array arm. */
+  private mixesFunctionsWithArrays(type: IrType): boolean {
+    if (type.kind === "array") return this.mixesFunctionsWithArrays(type.elem);
+    if (type.kind !== "union") return false;
+    const arms = this.unions.get(type.unionId)?.arms ?? [];
+    return (
+      (arms.some((arm) => arm.kind === "func") && arms.some((arm) => arm.kind === "array")) ||
+      arms.some((arm) => arm.kind === "array" && this.mixesFunctionsWithArrays(arm))
+    );
   }
 
   /** Exact-shape enforcement (SC2002). Records are monomorphic structs, so
@@ -12260,6 +12282,30 @@ export class Lowerer {
         );
         if (boxed) return boxed;
       }
+      // A node:path family is its module object (pathModuleValue), the
+      // bare module the target platform's family.
+      if (
+        expr.type.kind === "moduleNs" &&
+        (expr.type.moduleId === "builtin:path" ||
+          expr.type.moduleId === "builtin:path/posix" ||
+          expr.type.moduleId === "builtin:path/win32")
+      ) {
+        const family =
+          expr.type.moduleId !== "builtin:path"
+            ? expr.type.moduleId.slice("builtin:".length)
+            : builtinModuleConstOf(this, "path", "sep") === "\\"
+              ? "path/win32"
+              : "path/posix";
+        const value = pathModuleValue(this, family, expr.loc);
+        if (expr.kind === "moduleNsRef") return value;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr, loc: expr.loc }],
+          result: value,
+          type: DYN,
+          loc: expr.loc,
+        };
+      }
       if (
         expr.type.kind === "moduleNs" &&
         expr.type.moduleId === "builtin:events" &&
@@ -12311,7 +12357,7 @@ export class Lowerer {
           expr.kind === "closure" ? this.builtinCallableValueLengths.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
-          value: expr,
+          value: this.checkedBuiltinValue(expr),
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
@@ -16736,7 +16782,10 @@ export class Lowerer {
       (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
       (bi.member === "posix" || bi.member === "win32")
     ) {
-      return pathModuleValue(this, `path/${bi.member}`, loc);
+      // The family's namespace; an untyped use converts it to the module
+      // object (pathModuleValue, through coerceToExpected).
+      const moduleId = `builtin:path/${bi.member}`;
+      return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
     }
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
@@ -16879,6 +16928,7 @@ export class Lowerer {
   lowerNativeCallableValue(fn: BuiltinModuleFn, display: string, loc: SrcLoc): IrExpr | null {
     const valueParams = fn.valueParams;
     if (!valueParams) return null;
+    if (fn.checked?.only) return checkedNativeCallableValue(this, fn, display, loc);
     const shapes: ParamShape[] = valueParams.map((param): ParamShape => {
       if (param.mode === "rest") return { mode: "rest", type: arrayOf(param.type) };
       if (param.mode === "optional") {
@@ -16988,7 +17038,22 @@ export class Lowerer {
         loc,
       });
     }
+    if (valueParams.some((param) => param.name !== undefined)) {
+      this.builtinCheckedValues.set(fnName, () =>
+        checkedNativeCallableValue(this, fn, display, loc),
+      );
+    }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
+  }
+
+  /** A builtin function value about to become untyped: its checked twin
+   * when the builtin names its parameters (checkedNativeCallableValue), so
+   * untyped callers meet Node's argument validation. Typed slots keep the
+   * typed adapter. */
+  checkedBuiltinValue(expr: IrExpr): IrExpr {
+    const checked =
+      expr.kind === "closure" ? this.builtinCheckedValues.get(expr.fnName) : undefined;
+    return checked ? checked() : expr;
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {
