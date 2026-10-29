@@ -12,6 +12,7 @@ import {
   nativeCodegenTarget,
 } from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
@@ -237,6 +238,12 @@ writeFileSync(executable + ".json", JSON.stringify(manifest, null, 2) + "\n");
 // for programs without a tsconfig, recorded by the built compiler itself. A
 // compiler this host cannot run ships without them.
 const prebuiltKeys = recordPrebuiltLibDiagnostics(executable);
+// The probes' builds record the bundled runtime pack's verified artifacts
+// beside it, by this host's file identities; the distribution ships without
+// that record.
+rmSync(join(lib, target.runtimePackPackage.replace("@scriptc/", ""), PACK_VERIFIED_FILE), {
+  force: true,
+});
 if (prebuiltKeys === null) {
   console.warn(
     "warning: the built compiler did not run here; it ships without prebuilt lib diagnostics",
