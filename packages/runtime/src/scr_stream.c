@@ -541,7 +541,6 @@ void scr_stream_release_v(void *s) { scr_stream_release(s); }
  * the stream. Returns +1. */
 static ScrClosure *scr_stream_done_new(ScrStream *s, void *fn) {
   ScrClosure *c = scr_closure_new(fn, 1);
-  c->function_kind |= SCR_CLOSURE_KIND_RECEIVER_FREE; /* the completion thunks never read `this` */
   ScrBox *bx = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
   c->caps[0] = bx;
   scr_box_set_ref(bx, scr_stream_retain(s));
