@@ -2104,6 +2104,40 @@ function anyPiecedFuncType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType 
  * their own name, anonymous function/arrow expressions their
  * NamedEvaluation home (a variable initializer or property assignment).
  * Null when nothing names the value (the box stays anonymous). */
+/** The name Node gives the builtin module function `node` reads, through
+ * const aliases (`const get = process.cwd`), when the module table names its
+ * value differently from its member (BuiltinModuleFn.valueName); else null. */
+export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): string | null {
+  let n: ts.Node = node;
+  const seen = new Set<ts.Symbol>();
+  for (;;) {
+    while (ts.isParenthesizedExpression(n)) n = n.expression;
+    if (!ts.isIdentifier(n)) break;
+    const imported = lowerer.builtinImportOf(n);
+    if (imported)
+      return builtinModuleFnOf(lowerer, imported.module, imported.member)?.valueName ?? null;
+    const symbol = lowerer.resolveValueSymbol(n);
+    const declaration = symbol?.valueDeclaration;
+    if (
+      !symbol ||
+      seen.has(symbol) ||
+      !declaration ||
+      !ts.isVariableDeclaration(declaration) ||
+      !declaration.initializer ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+    )
+      return null;
+    seen.add(symbol);
+    n = declaration.initializer;
+  }
+  if (!ts.isPropertyAccessExpression(n)) return null;
+  const module = lowerer.isStdlibGlobal(n.expression, "process")
+    ? "process"
+    : lowerer.builtinNamespaceModuleOf(n.expression);
+  if (module === null) return null;
+  return builtinModuleFnOf(lowerer, module, n.name.text)?.valueName ?? null;
+}
+
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -12303,20 +12337,13 @@ export class Lowerer {
           liveReference(expr.type) ||
           (expr.type.kind === "union" &&
             (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
-        // A builtin function's adapter boxes under the builtin's name, the
-        // name Node's function carries (`[Function: randomUUID]`).
-        const builtinName =
-          expr.kind === "closure" ? this.builtinCallableValueNames.get(expr.fnName) : undefined;
-        const builtinLength =
-          expr.kind === "closure" ? this.builtinCallableValueLengths.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
           value: expr,
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
-          ...(builtinName !== undefined ? { fnName: builtinName } : {}),
-          ...(builtinLength !== undefined ? { fnLength: builtinLength } : {}),
+          ...this.builtinFunctionIdentity(expr),
         };
       }
       return expr;
@@ -12464,7 +12491,13 @@ export class Lowerer {
       ) {
         return {
           kind: "dynCheck",
-          value: { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc },
+          value: {
+            kind: "dynFrom",
+            value: expr,
+            type: DYN,
+            loc: expr.loc,
+            ...this.builtinFunctionIdentity(expr),
+          },
           type: expected,
           loc: expr.loc,
         };
@@ -16899,7 +16932,10 @@ export class Lowerer {
     if (!fnName) {
       fnName = keyedHelperName(this, `%builtin.value.${fn.valueFn ?? fn.fn}`, key);
       this.builtinCallableValueFns.set(key, fnName);
-      this.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+      this.builtinCallableValueNames.set(
+        fnName,
+        fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+      );
       if (fn.valueLength !== undefined)
         this.builtinCallableValueLengths.set(fnName, fn.valueLength);
       const params = funcType.params.map((type, index) => ({
@@ -16989,6 +17025,19 @@ export class Lowerer {
       });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
+  }
+
+  /** The name and length a builtin function's adapter boxes under: the ones
+   * Node's function carries (`[Function: randomUUID]`). Empty for any other
+   * value. */
+  builtinFunctionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
+    if (expr.kind !== "closure") return {};
+    const name = this.builtinCallableValueNames.get(expr.fnName);
+    const length = this.builtinCallableValueLengths.get(expr.fnName);
+    return {
+      ...(name !== undefined ? { fnName: name } : {}),
+      ...(length !== undefined ? { fnLength: length } : {}),
+    };
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

@@ -381,6 +381,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.stdio": "scr_process_stdio",
   "process.stderrWrite": "scr_process_stderr_write",
   "process.isTTY": "scr_process_is_tty",
+  "process.isTTYValue": "scr_process_is_tty_value",
   "date.now": "scr_date_now",
   "date.newNow": "scr_date_now",
   "date.newMs": "scr_date_new_ms",

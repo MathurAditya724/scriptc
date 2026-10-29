@@ -386,6 +386,7 @@ double scr_atomics_notify_dyn(const ScrDyn *, double, double);
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
  * documented no-op. */
 bool scr_process_is_tty(double fd);
+bool scr_process_is_tty_value(const ScrDyn *fd);
 void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 

@@ -5337,6 +5337,7 @@ function buildLibFnSignatures() {
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */
     "process.isTTY": { argTypes: [F64], result: BOOL },
+    "process.isTTYValue": { argTypes: [DYN], result: BOOL },
     // Like process.envGet: the result is the module's interned
     // `number | undefined` union — checked by arms in the libCall case.
     /** Terminal width over an fd literal (1/2 — process.stdout/stderr

@@ -24,7 +24,14 @@ import {
   localPrivateBrandClass,
   privateNameClass,
 } from "../private-brands.js";
-import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
+import {
+  type Lowerer,
+  PoisonError,
+  builtinValueNameOf,
+  jsFuncNameOf,
+  neverTaintedJsType,
+  own,
+} from "../lowerer.js";
 import {
   ARRAY_METHODS,
   MAP_METHODS,
@@ -1202,13 +1209,15 @@ export function lowerPropertyAccessExpr(
         (id) => lowerer.unions.get(id),
       )
     ) {
-      const fnName = jsFuncNameOf(expr.expression);
-      // A builtin function value whose length is not its adapter's
-      // parameter count (`Math.max.length` is 2).
-      const fnLength =
-        probed.kind === "closure"
-          ? lowerer.builtinCallableValueLengths.get(probed.fnName)
-          : undefined;
+      // A builtin function value keeps Node's name, and its length when that
+      // is not its adapter's parameter count (`Math.max.length` is 2). Any
+      // other function is named by its definition, through const aliases.
+      const identity = lowerer.builtinFunctionIdentity(probed);
+      const fnName =
+        identity.fnName ??
+        builtinValueNameOf(expr.expression, lowerer) ??
+        jsFuncNameOf(expr.expression, lowerer);
+      const fnLength = identity.fnLength;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,

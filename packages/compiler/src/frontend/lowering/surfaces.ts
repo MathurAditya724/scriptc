@@ -823,6 +823,9 @@ export interface BuiltinModuleFn {
   /** The function value's `length` when it is not the count of its
    * required value parameters (`Math.max`'s 2 over its rest pack). */
   valueLength?: number;
+  /** The function value's `name` when it is not the member's
+   * (`process.cwd` is Node's `wrappedCwd`). */
+  valueName?: string;
 }
 
 export type BuiltinValueParam =
@@ -1954,10 +1957,29 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
     },
     tty: {
-      isatty: { fn: "process.isTTY", params: [F64], result: BOOL },
+      isatty: {
+        fn: "process.isTTY",
+        params: [F64],
+        result: BOOL,
+        // As a value (loggers store `tty.isatty`), the adapter takes any
+        // argument: a value that is not an integral fd answers false, and is
+        // never coerced.
+        valueFn: "process.isTTYValue",
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
     },
     process: {
       loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
+      // Every spelling of process.cwd as a value is this one function, which
+      // reads the directory when it is called.
+      cwd: {
+        fn: "process.cwd",
+        params: [],
+        result: STRING,
+        valueParams: [],
+        valueName: "wrappedCwd",
+      },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/
     // end are special-cased (lowerNew + lowerStringDecoderMethodCall); no
@@ -2288,6 +2310,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     getRandomValues: ["crypto.getRandomValuesDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
+  },
+  tty: {
+    isatty: ["process.isTTYValue"],
   },
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.
@@ -2721,12 +2746,6 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
-      id: "node-builtin.process.cwd",
-      kind: "node-builtin",
-      name: "process.cwd",
-      fns: ["process.cwd"],
-    },
-    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -2860,7 +2879,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.isTTY",
       kind: "node-builtin",
       name: "process.isTTY",
-      fns: ["process.isTTY"],
+      fns: ["process.isTTY", "process.isTTYValue"],
       note: "the isTTY read on process.stdin/stdout/stderr — one surface across the three streams",
     },
     {
