@@ -5471,6 +5471,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // A module namespace beside another value in one slot (`[path.posix,
+      // path.win32]`, a `['posix', path.posix]` table row): a namespace has
+      // no union representation, and as a value it is the runtime's module
+      // object, so the slot is checked-dynamic. A namespace or null keeps
+      // its union (a probed process.getBuiltinModule result).
+      if (
+        arms.some((a) => a.kind === "moduleNs") &&
+        arms.filter((a) => !isUnitType(a)).length > 1 &&
+        !unions.recursivePending(widened)
+      ) {
+        return DYN;
+      }
       // SEVERAL PROMISE ARMS are ONE: `Promise<A> | Promise<B>` is
       // `Promise<A | B>`. A promise arm's tag IS the `instanceof Promise`
       // test, so JavaScript cannot tell the arms apart at run time (both

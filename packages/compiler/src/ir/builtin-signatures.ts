@@ -806,6 +806,14 @@ function buildLibFnSignatures() {
      * value: path and options arrive unchecked; the result is a string or a
      * Buffer by the options' encoding. */
     "fs.realpathValue": { argTypes: [DYN, DYN, BOOL], result: DYN },
+    // Builtin functions read as values: validateString under Node's argument
+    // name, and node:path's value adapters (scr_builtin_values.c).
+    "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
+    "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
+    "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
+    "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
+    "path.toNamespacedValue": { argTypes: [DYN, BOOL], result: DYN },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
     /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd
@@ -3675,6 +3683,7 @@ function buildLibFnSignatures() {
     "process.versions": { argTypes: [], result: DYN },
     "process.builtinId": { argTypes: [DYN, arrayOf(STRING)], result: STRING },
     "process.builtinModule": { argTypes: [STRING, DYN], result: DYN },
+    "process.builtinObject": { argTypes: [STRING, DYN, arrayOf(STRING)], result: DYN },
     "process.builtinUnsupported": { argTypes: [STRING, STRING], result: DYN },
     /** A module namespace object as a checked-dynamic value
      * (scr_module_namespace_value): the module id, its sorted export names

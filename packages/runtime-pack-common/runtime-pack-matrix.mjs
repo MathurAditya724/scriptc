@@ -66,6 +66,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // bigstats gate is narrower than bigint, which every bigint value turns on.
   ["scr_stats_bigint.c", "bigstats"],
   ["scr_regex.c", "regex"],
+  // path.win32.relative uses the regex unit's Unicode case mapping.
+  ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
   ["scr_assert.c", any("assert", "regex", "symbol")],

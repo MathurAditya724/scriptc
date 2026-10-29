@@ -256,7 +256,12 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { expandoMemberRead } from "./lower-expando.js";
-import { fenceNodeModuleMutationCall, lowerRequireCacheKeys } from "./lower-node-module.js";
+import {
+  fenceNodeModuleMutationCall,
+  isCjsRequireGlobal,
+  lowerRequireCacheKeys,
+} from "./lower-node-module.js";
+import { pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -467,6 +472,22 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const inlineValue = lowerInlineRequireValue(lowerer, expr);
     if (inlineValue) return inlineValue;
+  }
+  // `require("path/posix")` of a builtin as a value: the module's
+  // namespace, as a `const posix = require("path/posix")` binding is.
+  if (
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === "require" &&
+    isCjsRequireGlobal(lowerer, expr.expression)
+  ) {
+    const module = lowerer.builtinNamespaceModuleOf(expr);
+    // The platform namespaces are the path module objects.
+    if (module === "path/posix" || module === "path/win32")
+      return pathModuleValue(lowerer, module, loc);
+    if (module !== null && module !== "constants") {
+      const moduleId = `builtin:${module}`;
+      return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
+    }
   }
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare

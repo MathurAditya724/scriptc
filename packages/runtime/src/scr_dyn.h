@@ -770,6 +770,17 @@ static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(cons
                       e->accessor, e->writable, e->enumerable, e->configurable};
 }
 
+/* Stores `value` (moved) as the value of data property i and returns the
+ * previous value (owned by the caller). Reads no keys and does not follow
+ * the layout pointer, so exit-time teardown can use it after the layouts
+ * are freed. */
+static inline ScrDyn *scr_dyn_obj_exchange_value_at(ScrDyn *o, size_t i, ScrDyn *value) {
+  ScrDyn **slot = o->v.obj.layout ? &o->v.obj.slots[i] : &o->v.obj.entries[i].value;
+  ScrDyn *previous = *slot;
+  *slot = value;
+  return previous;
+}
+
 /* The index of own property `key`, or SIZE_MAX. A linear scan in
  * dictionary mode: for code that looks up options and headers, not for hot
  * property reads. */
@@ -2283,6 +2294,12 @@ const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
  * error.argTypeThrow libCall). Borrows all three; always throws. */
 SCR_COLD void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const ScrDyn *got);
 SCR_COLD void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrDyn *got);
+/* validateString(value, name) for a builtin function read as a value
+ * (scr_builtin_values.c): the string (+1), or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending; strings checks each element of a rest list
+ * in order and answers them as a string[]. Borrows both. */
+ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name);
+ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name);
 /* The property flavor ("The \"options.x\" property must be ...") — the
  * option-bag validators' gate (error.propTypeThrow). Always throws. */
 SCR_COLD void scr_throw_prop_type(const ScrStr *name, const ScrStr *expected, const ScrDyn *got);

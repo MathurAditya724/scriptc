@@ -1026,6 +1026,12 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.installValue",
       "buffer.staticValue",
       "buffer.prototypeMember",
+      "dyn.validateString",
+      "dyn.validateStrings",
+      "path.resolveValue",
+      "path.parseValue",
+      "path.formatValue",
+      "path.toNamespacedValue",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1166,6 +1172,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       "rl.terminal",
       "str.localeCase",
+      // win32.relative compares with String.prototype.toLowerCase's
+      // Unicode case mapping.
+      "path.win32Relative",
     ],
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
