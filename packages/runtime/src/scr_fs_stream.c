@@ -186,7 +186,10 @@ static bool scr_fss_try_inline(ScrFssOp *op) {
     if (errno == EOPNOTSUPP || errno == EINVAL || errno == ENOSYS) f->inline_ok = false;
     return false;
   }
-  if (n == 0 && op->kind == SCR_FSS_WRITE) return false;
+  /* A zero is not taken as EOF here: some kernels (Linux 5.9 and 5.10)
+   * answer 0 instead of EAGAIN for an uncached RWF_NOWAIT read, so the
+   * pool's read decides, as it does for a zero-byte write. */
+  if (n == 0) return false;
   if (op->kind == SCR_FSS_READ && n > 0 && (size_t)n < op->len) {
     op->got = (size_t)n;
     return false;
