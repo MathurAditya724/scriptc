@@ -190,6 +190,9 @@ function rareExit(argc: number): number {
   return v & 127;
 }
 
+/** The target writes ELF objects. */
+const elfTarget = target !== null && !/apple|darwin|windows|mingw/.test(target.llvmTriple);
+
 /** The section that holds `name` in an object file. */
 async function sectionOf(object: string, name: string): Promise<string | undefined> {
   const { stdout } = await execFileAsync("objdump", ["-t", object]);
@@ -658,16 +661,27 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
       // Without the block counts rare keeps no counts; with them it is cold
       // code. added, which the block counts do not name, keeps no counts.
       const [plain] = await emit(dir, rareProgram(), { outputs: 1, name: "plain", use: profile });
+      const [marked] = await emit(dir, rareProgram(), {
+        outputs: 1,
+        name: "marked",
+        use: profile,
+        blocks,
+      });
+      expect(await readFile(marked!)).not.toEqual(await readFile(plain!));
       const [cold] = await emit(dir, rareProgram(true), {
         outputs: 1,
         name: "cold",
         use: profile,
         blocks,
       });
-      expect(await sectionOf(plain!, "rare")).toBe(".text");
-      expect(await sectionOf(cold!, "rare")).toMatch(/^\.text\.unlikely/);
-      expect(await sectionOf(cold!, "added")).toBe(".text");
-      expect(await sectionOf(cold!, "hot")).toMatch(/^\.text\.hot/);
+      // ELF objects name the sections of hot and unlikely code; Mach-O and
+      // COFF objects keep every function in one text section.
+      if (elfTarget) {
+        expect(await sectionOf(plain!, "rare")).toBe(".text");
+        expect(await sectionOf(cold!, "rare")).toMatch(/^\.text\.unlikely/);
+        expect(await sectionOf(cold!, "added")).toBe(".text");
+        expect(await sectionOf(cold!, "hot")).toMatch(/^\.text\.hot/);
+      }
       expect(await run(await link(dir, [cold!], "cold"), 2)).toBe(rareExit(2));
     });
 
