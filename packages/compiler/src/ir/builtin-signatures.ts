@@ -808,15 +808,18 @@ function buildLibFnSignatures() {
     "fs.realpathValue": { argTypes: [DYN, DYN, BOOL], result: DYN },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
-    /** The os.userInfo() field trio (uv_os_get_passwd's slices): pw_name,
-     * pw_shell, pw_dir — the PASSWD homedir, not os.homedir's $HOME-first
-     * cascade (Node's own split). The frontend assembles the UserInfo
-     * record from these plus getuid/getgid. +1 fresh strings; a passwd
-     * lookup failure aborts (Node throws a system error there — no
-     * compiled program path reaches it for the running uid). */
+    /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd
+     * entry for the effective uid): pw_name, pw_shell, pw_dir — the PASSWD
+     * homedir, not os.homedir's $HOME-first cascade (Node's own split) —
+     * and pw_uid, pw_gid (-1 on Windows). The frontend assembles the
+     * UserInfo record from these. +1 fresh strings; a passwd lookup
+     * failure aborts (Node throws a system error there — no compiled
+     * program path reaches it for the running uid). */
     "os.userName": { argTypes: [], result: STRING },
     "os.userShell": { argTypes: [], result: STRING },
     "os.userHomedir": { argTypes: [], result: STRING },
+    "os.userUid": { argTypes: [], result: F64 },
+    "os.userGid": { argTypes: [], result: F64 },
     "os.tmpdir": { argTypes: [], result: STRING },
     // Result is the call site's Dict<NetworkInterfaceInfo[]> record (VOID is
     // the dgram.address sentinel — the libCall case checks the structure).
