@@ -640,6 +640,30 @@ static _Atomic(uintptr_t) scr_sa_heap_page; /* the page size, read with the mode
 #define SCR_SA_THREAD_TRIM_THRESHOLD (8 << 20)
 static _Thread_local size_t scr_sa_thread_large_bytes;
 static _Thread_local uintptr_t scr_sa_thread_heap; /* the heap this thread advised last */
+/* The heaps decided already, process-wide: advised, or found not to be a
+ * whole glibc heap. Each heap is checked against /proc/self/maps once: the
+ * threads of a type check switch between heaps often, and reading the maps
+ * at each switch cost thousands of reads of a file that grows with the
+ * process's mappings. A full table decides again; a heap that glibc maps
+ * again at an address decided before keeps the pages it gets. */
+#define SCR_SA_HEAPS_SEEN 1024u
+static _Atomic(uintptr_t) scr_sa_heaps_seen[SCR_SA_HEAPS_SEEN];
+
+/* Whether `heap` was decided already; records it when it was not. */
+static bool scr_sa_heap_seen(uintptr_t heap) {
+  size_t h = (size_t)(((uint64_t)(heap / SCR_SA_GLIBC_HEAP) * 0x9E3779B97F4A7C15ull) >> 54) & (SCR_SA_HEAPS_SEEN - 1);
+  for (size_t k = 0; k < SCR_SA_HEAPS_SEEN; k++, h = (h + 1) & (SCR_SA_HEAPS_SEEN - 1)) {
+    uintptr_t cur = atomic_load_explicit(&scr_sa_heaps_seen[h], memory_order_relaxed);
+    if (cur == heap) return true;
+    if (cur == 0) {
+      if (atomic_compare_exchange_strong_explicit(&scr_sa_heaps_seen[h], &cur, heap, memory_order_relaxed,
+                                                  memory_order_relaxed))
+        return false;
+      if (cur == heap) return true;
+    }
+  }
+  return false;
+}
 static _Atomic(int) scr_sa_thread_heaps; /* 0 undecided, 1 advised, 2 off */
 extern void *__libc_malloc(size_t);
 
@@ -716,6 +740,7 @@ static void scr_sa_thread_heap_note(void *p, size_t n) {
   uintptr_t heap = (uintptr_t)p & ~(SCR_SA_GLIBC_HEAP - 1);
   if (heap == scr_sa_thread_heap) return;
   scr_sa_thread_heap = heap;
+  if (scr_sa_heap_seen(heap)) return;
   if (scr_sa_glibc_heap_mapped(heap) && mprotect((void *)heap, SCR_SA_GLIBC_HEAP, PROT_READ | PROT_WRITE) == 0)
     (void)madvise((void *)heap, SCR_SA_GLIBC_HEAP, MADV_HUGEPAGE);
 }
