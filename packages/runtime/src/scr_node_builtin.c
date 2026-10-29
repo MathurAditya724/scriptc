@@ -368,18 +368,14 @@ static void scr_builtin_release(void *handle) {
 static void scr_builtin_cleanup(void) {
   /* An exports object can hold itself and the other path family
    * (path.posix.posix, path.posix.win32): its member values are released
-   * first, so the objects are freed. The values are swapped out of the
-   * object's own storage, without reading its keys: the exit-time layout
+   * first, so the objects are freed. The values are swapped out without
+   * reading the keys (scr_dyn_obj_exchange_value_at): the exit-time layout
    * reset can run before this and free the layout the keys live in. */
   for (ScrBuiltinModule *module = scr_builtin_modules; module; module = module->next) {
     if (!module->object) continue;
     ScrDyn *exports = module->exports;
-    for (size_t i = 0; i < exports->v.obj.len; i++) {
-      ScrDyn **slot = exports->v.obj.layout ? &exports->v.obj.slots[i] : &exports->v.obj.entries[i].value;
-      ScrDyn *value = *slot;
-      *slot = scr_dyn_retain(scr_dyn_undefined());
-      scr_dyn_release(value);
-    }
+    for (size_t i = 0; i < scr_dyn_obj_count(exports); i++)
+      scr_dyn_release(scr_dyn_obj_exchange_value_at(exports, i, scr_dyn_retain(scr_dyn_undefined())));
   }
   while (scr_builtin_modules) {
     ScrBuiltinModule *module = scr_builtin_modules;

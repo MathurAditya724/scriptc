@@ -770,6 +770,17 @@ static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(cons
                       e->accessor, e->writable, e->enumerable, e->configurable};
 }
 
+/* Stores `value` (moved) as the value of data property i and returns the
+ * previous value (owned by the caller). Reads no keys and does not follow
+ * the layout pointer, so exit-time teardown can use it after the layouts
+ * are freed. */
+static inline ScrDyn *scr_dyn_obj_exchange_value_at(ScrDyn *o, size_t i, ScrDyn *value) {
+  ScrDyn **slot = o->v.obj.layout ? &o->v.obj.slots[i] : &o->v.obj.entries[i].value;
+  ScrDyn *previous = *slot;
+  *slot = value;
+  return previous;
+}
+
 /* The index of own property `key`, or SIZE_MAX. A linear scan in
  * dictionary mode: for code that looks up options and headers, not for hot
  * property reads. */
