@@ -1062,6 +1062,9 @@ export function lambdaSignature(
         type: DYN,
         mode: "required",
       }));
+      // `arguments` holds the call's own tuple: a console line passes one
+      // or two arguments whatever the replacement declares.
+      appendArgumentsParameter(lowerer, node, shapes, "arguments");
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }
