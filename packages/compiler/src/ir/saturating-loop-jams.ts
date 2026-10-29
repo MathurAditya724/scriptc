@@ -121,6 +121,20 @@ function pureStatements(list: readonly IrStmt[], locals: ReadonlyMap<string, IrL
   );
 }
 
+/** The bits `C` of `id = id | C`, with `C` a non-negative int32 literal, or
+ * null. */
+function orBits(s: IrStmt): number | null {
+  if (
+    s.kind !== "assign" ||
+    s.value.kind !== "bin" ||
+    s.value.op !== "|" ||
+    !isRef(s.value.left, s.localId)
+  )
+    return null;
+  const bits = intLit(s.value.right);
+  return bits !== null && bits >= 0 && bits <= 0x7fffffff ? bits : null;
+}
+
 /** The statements of the inner loop's body: pure declarations and
  * assignments, `if` statements over them, `acc = acc | C`, and
  * `if (acc === full) break` (collected into `breaks`). */
@@ -153,19 +167,12 @@ function innerStatements(
         innerStatements(s.else_ ?? [], locals, acc)
       );
     }
-    if (
-      s.kind === "assign" &&
-      s.value.kind === "bin" &&
-      s.value.op === "|" &&
-      isRef(s.value.left, s.localId)
-    ) {
-      const bits = intLit(s.value.right);
-      if (bits !== null && bits >= 0 && bits <= 0x7fffffff) {
-        if (acc.id !== null && acc.id !== s.localId) return false;
-        acc.id = s.localId;
-        acc.bits |= bits;
-        return true;
-      }
+    const bits = orBits(s);
+    if (s.kind === "assign" && bits !== null) {
+      if (acc.id !== null && acc.id !== s.localId) return false;
+      acc.id = s.localId;
+      acc.bits |= bits;
+      return true;
     }
     return pureStatements([s], locals);
   });
@@ -263,6 +270,14 @@ function matchJam(
   // it only by its ORs.
   const accDecl = pre.find((s) => s.kind === "varDecl" && s.localId === accId);
   if (accDecl?.kind !== "varDecl" || intLit(accDecl.init) === null) return null;
+  const onlyOrs = everyStmtList(inner.body, {
+    expr: () => true,
+    stmt: (s) => writtenLocal(s) !== accId || orBits(s) !== null,
+  });
+  if (!onlyOrs) return null;
+  // Every copy shares the inner counter: only the inner loop's update writes
+  // it.
+  if (writes(inner.body).has(j)) return null;
   // The counter, the inner bound and every value the inner loop reads from
   // outside the iteration are the same for every copy: only `pre` and the
   // counter vary.
@@ -280,12 +295,16 @@ function matchJam(
   for (const id of postWrites) if (reads([...pre, inner], id) || own.has(id)) return null;
   for (const id of writes(pre)) if (!own.has(id)) return null;
   // After the inner loop, iterations past a copy's exit are dead: `post`
-  // reads no value the inner loop writes besides the accumulator, and the
-  // inner bound reads nothing the copies write.
+  // reads no value the inner loop writes besides the accumulator.
   for (const id of innerWrites) if (id !== accId && reads(post, id)) return null;
-  for (const id of own)
-    if (id !== j && reads([{ kind: "exprStmt", expr: inner.cond, loc: inner.loc }], id))
-      return null;
+  // The copies share the inner loop's start and bound: they read neither the
+  // counter nor a local of the iteration.
+  const controls: IrStmt[] = [
+    { kind: "exprStmt", expr: inner.init.init, loc: inner.loc },
+    { kind: "exprStmt", expr: inner.cond, loc: inner.loc },
+  ];
+  if (reads(controls, counter)) return null;
+  for (const id of own) if (id !== j && reads(controls, id)) return null;
   return { counter, values, pre, inner, post, acc: accId, full };
 }
 

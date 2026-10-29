@@ -19,10 +19,16 @@ const bin = (op: Op, left: IrExpr, right: IrExpr): IrExpr => ({
 const decl = (id: string, init: IrExpr): IrStmt => ({ loc, kind: "varDecl", localId: id, init });
 const set = (id: string, value: IrExpr): IrStmt => ({ loc, kind: "assign", localId: id, value });
 const stepBy = (id: string, by: number): IrStmt => set(id, bin("+", ref(id), num(by)));
-const loop = (id: string, end: IrExpr, by: number, body: IrStmt[]): IrStmt & { kind: "for" } => ({
+const loop = (
+  id: string,
+  end: IrExpr,
+  by: number,
+  body: IrStmt[],
+  start: IrExpr = num(0),
+): IrStmt & { kind: "for" } => ({
   loc,
   kind: "for",
-  init: decl(id, num(0)),
+  init: decl(id, start),
   cond: bin("<", ref(id), end),
   update: stepBy(id, by),
   body,
@@ -61,7 +67,15 @@ function lane(z: string, c: string, bit: number, full = 3, extra: IrStmt[] = [])
 }
 
 function nest(
-  options: { full?: number; post?: IrStmt[]; preExtra?: IrStmt[]; copies?: number } = {},
+  options: {
+    full?: number;
+    post?: IrStmt[];
+    preExtra?: IrStmt[];
+    innerExtra?: IrStmt[];
+    innerStart?: IrExpr;
+    innerEnd?: IrExpr;
+    copies?: number;
+  } = {},
 ): IrStmt[] {
   const post = options.post ?? [set("res", bin("|", bin("<<", ref("res"), num(2)), ref("b")))];
   return [
@@ -73,10 +87,17 @@ function nest(
       decl("z2", ref("c2")),
       decl("b", num(0)),
       ...(options.preExtra ?? []),
-      loop("j", num(50), 1, [
-        ...lane("z1", "c1", 2, options.full),
-        ...lane("z2", "c2", 1, options.full),
-      ]),
+      loop(
+        "j",
+        options.innerEnd ?? num(50),
+        1,
+        [
+          ...lane("z1", "c1", 2, options.full),
+          ...lane("z2", "c2", 1, options.full),
+          ...(options.innerExtra ?? []),
+        ],
+        options.innerStart,
+      ),
       ...post,
     ]),
   ];
@@ -162,6 +183,17 @@ test("keeps loops whose exits or values do not allow running iterations together
   reject(nest({ post: [set("res", bin("+", ref("res"), ref("z1")))] }));
   // `pre` reads what `post` writes.
   reject(nest({ preExtra: [decl("seed", ref("res"))] }));
+  // The inner loop writes the accumulator other than by an OR: a later
+  // iteration can clear bits after an exit.
+  reject(nest({ innerExtra: [set("b", num(0))] }));
+  reject(nest({ innerExtra: [set("b", bin("+", ref("b"), num(4)))] }));
+  // The inner loop's body advances its counter, which the copies share.
+  reject(nest({ innerExtra: [stepBy("j", 1)] }));
+  // The inner loop's start or bound reads the counter or a local of the
+  // iteration.
+  reject(nest({ innerStart: ref("i") }));
+  reject(nest({ innerEnd: bin("+", num(10), ref("i")) }));
+  reject(nest({ preExtra: [decl("start", num(3))], innerStart: ref("start") }));
   // One iteration, or more than eight.
   reject(nest({ copies: 1 }));
   reject(nest({ copies: 9 }));

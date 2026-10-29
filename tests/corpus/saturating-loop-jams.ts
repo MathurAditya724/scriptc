@@ -66,6 +66,82 @@ function quads(initial: Float64Array, ci: number): number {
   return res;
 }
 
+// Loops the jam keeps as they are. The inner loop clears the accumulator.
+function resets(initial: Float64Array): number {
+  let res = 0;
+  for (let i = 0; i < 4; i += 2) {
+    let zr1 = initial[i]!;
+    let zr2 = initial[i + 1]!;
+    let b = 0;
+    for (let j = 0; j < 30; j++) {
+      zr1 = zr1 * zr1 + 0.2;
+      if (zr1 > 2) {
+        b |= 2;
+        if (b === 3) break;
+      }
+      zr2 = zr2 * zr2 + 0.2;
+      if (zr2 > 2) {
+        b |= 1;
+        if (b === 3) break;
+      }
+      if (j > 20) b = 0;
+    }
+    res = res * 4 + b;
+  }
+  return res;
+}
+
+// The inner loop's body advances its counter.
+function skips(initial: Float64Array): number {
+  let res = 0;
+  for (let i = 0; i < 4; i += 2) {
+    let zr1 = initial[i]!;
+    let zr2 = initial[i + 1]!;
+    let b = 0;
+    let steps = 0;
+    for (let j = 0; j < 16; j++) {
+      zr1 = zr1 * zr1 + 0.2;
+      if (zr1 > 2) {
+        b |= 2;
+        if (b === 3) break;
+      }
+      zr2 = zr2 * zr2 + 0.2;
+      if (zr2 > 2) {
+        b |= 1;
+        if (b === 3) break;
+      }
+      if (zr1 < 0.5) j = j + 1;
+    }
+    res = res * 4 + b;
+  }
+  return res;
+}
+
+// The inner loop's start and bound depend on the outer iteration.
+function shifted(initial: Float64Array): number {
+  let res = 0;
+  for (let i = 0; i < 4; i += 2) {
+    let zr1 = initial[i]!;
+    let zr2 = initial[i + 1]!;
+    let b = 0;
+    const start = i * 3;
+    for (let j = start; j < 10 + i; j++) {
+      zr1 = zr1 * zr1 + 0.2;
+      if (zr1 > 2) {
+        b |= 2;
+        if (b === 3) break;
+      }
+      zr2 = zr2 * zr2 + 0.2;
+      if (zr2 > 2) {
+        b |= 1;
+        if (b === 3) break;
+      }
+    }
+    res = res * 4 + b;
+  }
+  return res;
+}
+
 const size = 64;
 const initial = new Float64Array(size);
 for (let x = 0; x < size; x++) initial[x] = (2 * x) / size - 1.5;
@@ -83,3 +159,6 @@ const q = new Float64Array([0.1, 1.5, -0.3, 3]);
 console.log(quads(q, 0.2), quads(q, -1.9), quads(new Float64Array(4), 0));
 // A row past the end of the coordinates reads NaN, which never escapes.
 console.log(row(initial, 0.5, (size >> 3) + 1, 50).slice(-2));
+const r = new Float64Array([1.2, 0.5, 1.3, 0.9]);
+const s = new Float64Array([0.1, 0.1, 0.73, 0.74]);
+console.log(resets(q), resets(r), skips(q), skips(s), shifted(q), shifted(r));
