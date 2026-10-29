@@ -7,6 +7,8 @@
  *
  *   - a union element to one of its arms, or to a union of some of its
  *     arms, by its tag;
+ *   - a union element to a record with the same fields as one of its arms,
+ *     through that arm;
  *   - a checked-dynamic element by dynCheck;
  *   - a class instance to a subclass by its class;
  *   - a tuple or record to one with the same fields, field by field.
@@ -229,10 +231,35 @@ function unionConversion(
   if (targetArms === null) return null;
   const body: IrStmt[] = [];
   let kept = 0;
+  let recordArmConversions = 0;
   for (let tag = 0; tag < source.arms.length; tag++) {
     const arm = source.arms[tag]!;
     const targetTag = targetArms.findIndex((t) => typeEquals(t, arm));
-    if (targetTag < 0) continue;
+    if (targetTag < 0) {
+      // A record target that is no arm itself but the same fields as one
+      // (`Model<"a">` from the `Model<Api>` arm, whose nested union field
+      // the predicate narrows): that arm converts field by field.
+      if (to.kind !== "record" || arm.kind !== "record") continue;
+      const narrowedArm: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag,
+        value: input,
+        type: arm,
+        loc,
+      };
+      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc);
+      if (converted === null) continue;
+      recordArmConversions++;
+      body.push({
+        kind: "if",
+        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: input, type: BOOL, loc },
+        then: converted,
+        else_: null,
+        loc,
+      });
+      continue;
+    }
     kept++;
     const payload: IrExpr = isUnitType(arm)
       ? { kind: "unitLit", unit: arm.kind === "undefinedT" ? "undefined" : "null", type: arm, loc }
@@ -249,8 +276,11 @@ function unionConversion(
       loc,
     });
   }
-  // Every arm the target names must be one of the union's own arms.
-  if (kept === 0 || kept !== targetArms.length) return null;
+  // Every arm the target names must be one of the union's own arms, or a
+  // record target converts from at least one arm.
+  if (recordArmConversions > 0) {
+    if (kept !== 0) return null;
+  } else if (kept === 0 || kept !== targetArms.length) return null;
   body.push(
     typeError(
       `a kept element is not a '${typeText}' (a type predicate returned true for a value of another type)`,
