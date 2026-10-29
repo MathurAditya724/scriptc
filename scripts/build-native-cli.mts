@@ -164,6 +164,12 @@ const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), 
   ...(profileGenerate === undefined ? {} : { profileGenerate }),
   ...(profileUse === undefined ? {} : { profileUse }),
   ...(functionLayout === undefined ? {} : { functionLayout }),
+  // Most of the compiler's runs are short (an unchanged rebuild takes tens of
+  // milliseconds), and a run maps every 2 MiB text window it touches whole. Text
+  // on 4 KiB pages keeps an unchanged rebuild at about a third of the peak RSS,
+  // and builds of tsc-ts take the same time. Executables the compiler builds
+  // keep huge text.
+  hugeText: false,
   emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
 });
 if (!result.ok)
