@@ -119,11 +119,8 @@ export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
   for (const file of lowerer.program.getSourceFiles()) {
     if (file.isDeclarationFile || isJsSourceFile(file)) continue;
     ts.walkPreorder(file, (node) => {
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        WEB_VIEW_CALLS.has(node.name.text) &&
-        isReadableStreamMember(lowerer, node)
-      )
+      const member = staticMemberName(node);
+      if (member !== null && WEB_VIEW_CALLS.has(member) && isReadableStreamMember(lowerer, node))
         found = true;
       else if (ts.isNewExpression(node)) {
         const name = stdlibGlobalNameOf(lowerer, unparenthesized(node.expression));
@@ -316,10 +313,29 @@ function isReadableStreamType(lowerer: Lowerer, type: ts.Type): boolean {
   );
 }
 
-/** Whether a member access resolves to a member of the stdlib
- * ReadableStream interface. */
-function isReadableStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
-  const member = lowerer.checker.getSymbolAtLocation(access.name);
+type MemberAccess = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+/** The member a property access names, or an element access with a string
+ * literal key (`body.tee` and `body["tee"]`); null for any other node. */
+function staticMemberName(node: ts.Node): string | null {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) {
+    const key = node.argumentExpression;
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+  }
+  return null;
+}
+
+/** Whether a member access (staticMemberName) resolves to a member of the
+ * stdlib ReadableStream interface. */
+function isReadableStreamMember(lowerer: Lowerer, access: ts.Node): boolean {
+  const key = ts.isPropertyAccessExpression(access)
+    ? access.name
+    : ts.isElementAccessExpression(access)
+      ? access.argumentExpression
+      : null;
+  if (key === null) return false;
+  const member = lowerer.checker.getSymbolAtLocation(key);
   if (member === undefined || !lowerer.isStdlibSymbol(member)) return false;
   let owner: ts.Node | undefined = member.declarations[0]?.parent;
   while (owner !== undefined && !ts.isInterfaceDeclaration(owner)) owner = owner.parent;
@@ -366,9 +382,10 @@ function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction
     let found = false;
     ts.walkPreorder(file, (node) => {
       let receiver: ts.Type | null = null;
-      if (ts.isPropertyAccessExpression(node) && members.has(node.name.text)) {
+      const member = staticMemberName(node);
+      if (member !== null && members.has(member)) {
         if (isReadableStreamMember(lowerer, node)) found = true;
-        else receiver = lowerer.typeOf(node.expression);
+        else receiver = lowerer.typeOf((node as MemberAccess).expression);
       } else if (iterates && ts.isForOfStatement(node) && node.awaitModifier !== undefined) {
         receiver = lowerer.typeOf(node.expression);
         if (isReadableStreamType(lowerer, receiver)) found = true;
