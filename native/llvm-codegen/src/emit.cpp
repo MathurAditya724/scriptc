@@ -374,23 +374,34 @@ bool hasProfileCounts(const Function &F) {
 
 // Runs right after the profile annotation, before inlining and dead code
 // elimination change the functions it annotated: counts them and records
-// their block counts, then annotates the functions whose control flow
-// changed from FallbackCounts. A function the profile has no record of keeps
-// no counts, as without block counts. Returns the analyses that remain valid.
+// their block counts, then annotates from FallbackCounts the functions whose
+// control flow changed, and the functions the profile has no record of that
+// FallbackCounts records as never run. A sparse profile leaves out the
+// functions its training never ran; the block counts name them, so they get
+// an entry count of 0 and LLVM optimizes them as cold code, as a profile with
+// zero counts would make it. A function neither names keeps no counts, as
+// without block counts: it was added after the profile was collected.
+// Returns the analyses that remain valid.
 PreservedAnalyses afterProfileAnnotation(Module &M, ProfileMatch &Match) {
   std::vector<Function *> Mismatched;
+  std::vector<Function *> Unrecorded;
   for (Function &F : M) {
     if (F.isDeclaration())
       continue;
     if (!hasProfileCounts(F)) {
       if (hasHashMismatchTag(F))
         Mismatched.push_back(&F);
+      else
+        Unrecorded.push_back(&F);
       continue;
     }
     ++Match.Annotated;
     if (Recorder)
       Recorder->add(F);
   }
+  if (Recorder)
+    for (Function *F : Unrecorded)
+      Recorder->addNeverRan(*F);
   if (!FallbackCounts)
     return PreservedAnalyses::all();
   ProfileSummaryInfo Summary(M);
@@ -401,6 +412,13 @@ PreservedAnalyses afterProfileAnnotation(Module &M, ProfileMatch &Match) {
       continue;
     annotateFromBlocks(*F, Record->second, Summary);
     ++Match.Recovered;
+    Preserved = PreservedAnalyses::none();
+  }
+  for (Function *F : Unrecorded) {
+    auto Record = FallbackCounts->find(F->getName());
+    if (Record == FallbackCounts->end() || Record->second.EntryCount != 0)
+      continue;
+    annotateFromBlocks(*F, Record->second, Summary);
     Preserved = PreservedAnalyses::none();
   }
   return Preserved;
