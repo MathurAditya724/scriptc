@@ -2549,13 +2549,26 @@ export function lowerDestructuringDecl(
     }
   }
   const out: IrStmt[] = [];
+  // V8's destructuring TypeError spells STATIC sources: an identifier
+  // source reads "<name> is not iterable", an identifier-callee call
+  // "<name> is not a function or its return value is not iterable";
+  // everything else (property reads, method calls, parameters) gets the
+  // runtime kind wording — exactly V8's CallPrinter behavior. The DYN
+  // pattern arm and the unit arms of a narrowed union consume this.
+  const src = decl.initializer!;
+  const dynSpell = ts.isIdentifier(src)
+    ? `${src.text} is not iterable`
+    : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
+      ? `${src.expression.text} is not a function or its return value is not iterable`
+      : undefined;
   // JS: a union source with exactly ONE destructurable arm beside unit
   // arms (`nameAndArgs.match(re)` — `RegExpMatchArray | null`, the
   // always-matches idiom) destructures through a VALIDATED narrow: the
-  // unit arms throw at runtime exactly where Node's TypeError would
-  // (the message is the fence's — a unit value here is the failure
-  // path either way). TypeScript keeps the fence: narrowing first is
-  // the annotated fix.
+  // unit arms throw Node's TypeError, through the checks a dyn source
+  // takes (RequireObjectCoercible for an object pattern, GetIterator for
+  // an array pattern). An object pattern whose source has no V8
+  // spelling keeps the fence. TypeScript keeps the fence: narrowing
+  // first is the annotated fix.
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && init.type.kind === "union") {
     const def = lowerer.unions.get(init.type.unionId);
     const dataArms = (def?.arms ?? []).filter((a) => !isUnitType(a));
@@ -2571,6 +2584,26 @@ export function lowerDestructuringDecl(
       const utmp = lowerer.declareHiddenLocal("%destrU", init.type);
       out.push({ kind: "varDecl", localId: utmp.id, init, loc });
       const uref: IrExpr = { kind: "varRef", localId: utmp.id, type: init.type, loc };
+      const spelling = destrSpellingOf(src);
+      const check: IrExpr | null = ts.isArrayBindingPattern(decl.name)
+        ? {
+            kind: "dynIterN",
+            value: lowerer.coerceToExpected(uref, DYN),
+            count: decl.name.elements.nodes.length,
+            ...(dynSpell ? { notIterableMessage: dynSpell } : {}),
+            type: DYN,
+            loc,
+          }
+        : spelling !== null
+          ? {
+              kind: "dynDestrCheck",
+              value: lowerer.coerceToExpected(uref, DYN),
+              spelling,
+              ...firstPatternProp(lowerer, decl.name as ts.ObjectBindingPattern),
+              type: DYN,
+              loc,
+            }
+          : null;
       out.push({
         kind: "if",
         cond: {
@@ -2583,6 +2616,7 @@ export function lowerDestructuringDecl(
           loc,
         },
         then: [
+          ...(check !== null ? [{ kind: "exprStmt" as const, expr: check, loc }] : []),
           {
             kind: "runtimeFence",
             code: "SC1031",
@@ -2635,42 +2669,19 @@ export function lowerDestructuringDecl(
         "destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call)",
       );
     }
-    const first = (decl.name as ts.ObjectBindingPattern).elements.nodes[0];
-    const firstKey =
-      first === undefined || first.dotDotDotToken !== undefined
-        ? undefined
-        : (first.propertyName ?? first.name);
-    // V8 names the first property when its key is an identifier, a string
-    // or a number; a computed first key takes the bare (source-only) form.
-    const firstProp =
-      firstKey === undefined || ts.isComputedPropertyName(firstKey)
-        ? undefined
-        : (patternKeyNameOf(lowerer, firstKey as ts.PropertyName) ?? undefined);
     out.push({
       kind: "exprStmt",
       expr: {
         kind: "dynDestrCheck",
         value: { kind: "varRef", localId: tmp.id, type: init.type, loc },
         spelling,
-        ...(firstProp !== undefined ? { firstProp } : {}),
+        ...firstPatternProp(lowerer, decl.name as ts.ObjectBindingPattern),
         type: init.type,
         loc,
       },
       loc,
     });
   }
-  // V8's destructuring TypeError spells STATIC sources: an identifier
-  // source reads "<name> is not iterable", an identifier-callee call
-  // "<name> is not a function or its return value is not iterable";
-  // everything else (property reads, method calls, parameters) gets the
-  // runtime kind wording — exactly V8's CallPrinter behavior. Only the
-  // DYN pattern arm consumes this.
-  const src = decl.initializer!;
-  const dynSpell = ts.isIdentifier(src)
-    ? `${src.text} is not iterable`
-    : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
-      ? `${src.expression.text} is not a function or its return value is not iterable`
-      : undefined;
   lowerer.lowerBindingPattern(
     decl.name as ts.ArrayBindingPattern | ts.ObjectBindingPattern,
     () => ({ kind: "varRef", localId: tmp.id, type: init.type, loc }),
@@ -9587,6 +9598,26 @@ export function lowerDestructuringAssign(
 ): IrStmt {
   const parts = destructuringAssignInto(lowerer, target, init, null, blame, loc);
   return { kind: "block", body: parts.stmts, loc };
+}
+
+/** The first property V8 names in an object pattern's destructuring
+ * TypeError ("Cannot destructure property 'a' of ..."): an identifier,
+ * string or numeric first key. A computed first key, a rest element or
+ * an empty pattern takes the bare (source-only) form. */
+function firstPatternProp(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+): { firstProp?: string } {
+  const first = pattern.elements.nodes[0];
+  const firstKey =
+    first === undefined || first.dotDotDotToken !== undefined
+      ? undefined
+      : (first.propertyName ?? first.name);
+  const firstProp =
+    firstKey === undefined || ts.isComputedPropertyName(firstKey)
+      ? undefined
+      : (patternKeyNameOf(lowerer, firstKey as ts.PropertyName) ?? undefined);
+  return firstProp !== undefined ? { firstProp } : {};
 }
 
 /** V8's spelling of a destructuring RHS in its TypeError message
