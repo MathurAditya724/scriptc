@@ -1219,14 +1219,17 @@ export function lowerPropertyAccessExpr(
       const fnName =
         builtinValueNameOf(expr.expression, lowerer) ?? jsFuncNameOf(expr.expression, lowerer);
       const fnLength = lowerer.builtinFunctionIdentity(probed).fnLength;
-      const boxed: IrExpr = {
-        kind: "dynFrom",
-        value: probed,
-        type: DYN,
-        ...(fnName !== null ? { fnName } : {}),
-        ...(fnLength !== undefined ? { fnLength } : {}),
-        loc,
-      };
+      const boxed = lowerer.withBuiltinFunctionName(
+        {
+          kind: "dynFrom",
+          value: probed,
+          type: DYN,
+          ...(fnName !== null ? { fnName: typeof fnName === "string" ? fnName : fnName.main } : {}),
+          ...(fnLength !== undefined ? { fnLength } : {}),
+          loc,
+        },
+        fnName ?? undefined,
+      );
       const key: IrExpr = {
         kind: "strLit",
         value: expr.name.text,

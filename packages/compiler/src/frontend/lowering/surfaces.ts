@@ -826,6 +826,9 @@ export interface BuiltinModuleFn {
   /** The function value's `name` when it is not the member's
    * (`process.cwd` is Node's `wrappedCwd`). */
   valueName?: string;
+  /** A different name in workers, which can expose the native function
+   * instead of the main thread's wrapper. */
+  valueWorkerName?: string;
 }
 
 export type BuiltinValueParam =
@@ -1981,6 +1984,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: STRING,
         valueParams: [],
         valueName: "wrappedCwd",
+        valueWorkerName: "",
       },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/

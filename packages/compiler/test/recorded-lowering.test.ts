@@ -20,6 +20,9 @@ const PROGRAMS = [
   "6496-key-order-built-and-parsed.ts",
   "6916-index-record-spread-overrides.ts",
   "6951-unknown-cast-class-methods.ts",
+  // Builtin callable metadata includes a worker-specific name.
+  "process-cwd-worker-name.cjs",
+  "process-cwd-worker-name.mjs",
   // Units without records rebuild a shared helper in place.
   "class-computed-key-descriptors.ts",
 ];

@@ -2099,6 +2099,18 @@ function anyPiecedFuncType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType 
   return { kind: "func", params, ret };
 }
 
+type BuiltinValueName = string | { main: string; worker: string };
+
+function builtinModuleValueName(
+  lowerer: Lowerer,
+  fn: BuiltinModuleFn | undefined,
+): BuiltinValueName | null {
+  if (fn?.valueName === undefined) return null;
+  return fn.valueWorkerName !== undefined && lowerer.workerTargets.length > 0
+    ? { main: fn.valueName, worker: fn.valueWorkerName }
+    : fn.valueName;
+}
+
 /** The JS `Function.prototype.name` of an expression flowing into a dyn
  * slot. Immutable identifier aliases retain their creation-site name; property
  * reads answer the referenced name. Named function expressions
@@ -2108,7 +2120,7 @@ function anyPiecedFuncType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType 
 /** The name Node gives the builtin module function `node` reads, through
  * const aliases (`const get = process.cwd`), when the module table names its
  * value differently from its member (BuiltinModuleFn.valueName); else null. */
-export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): string | null {
+export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): BuiltinValueName | null {
   let n: ts.Node = node;
   const seen = new Set<ts.Symbol>();
   for (;;) {
@@ -2116,7 +2128,10 @@ export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): string | nu
     if (!ts.isIdentifier(n)) break;
     const imported = lowerer.builtinImportOf(n);
     if (imported)
-      return builtinModuleFnOf(lowerer, imported.module, imported.member)?.valueName ?? null;
+      return builtinModuleValueName(
+        lowerer,
+        builtinModuleFnOf(lowerer, imported.module, imported.member),
+      );
     const symbol = lowerer.resolveValueSymbol(n);
     const declaration = symbol?.valueDeclaration;
     if (!symbol || seen.has(symbol) || !declaration) return null;
@@ -2158,12 +2173,12 @@ function builtinMemberValueName(
   lowerer: Lowerer,
   receiver: ts.Expression,
   member: string,
-): string | null {
+): BuiltinValueName | null {
   const module = lowerer.isStdlibGlobal(receiver, "process")
     ? "process"
     : lowerer.builtinNamespaceModuleOf(receiver);
   if (module === null) return null;
-  return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
+  return builtinModuleValueName(lowerer, builtinModuleFnOf(lowerer, module, member));
 }
 
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
@@ -3491,7 +3506,7 @@ export class Lowerer {
    * all reuse one immortal zero-capture closure. */
   readonly builtinCallableValueFns = new Map<string, string>();
   /** Each builtin function-value adapter's Node name, for boxed values. */
-  readonly builtinCallableValueNames = new Map<string, string>();
+  readonly builtinCallableValueNames = new Map<string, BuiltinValueName>();
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
@@ -4194,7 +4209,7 @@ export class Lowerer {
       mapTable("spHofHelpers", this.spHofHelpers),
       mapTable("primitiveCtorFns", this.primitiveCtorFns),
       mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
-      mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
+      irDataTable("builtinCallableValueNames", this.builtinCallableValueNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
       mapTable("regionRunHelpers", this.regionRunHelpers),
       mapTable("internTableHelpers", this.internTableHelpers),
@@ -12416,14 +12431,14 @@ export class Lowerer {
           liveReference(expr.type) ||
           (expr.type.kind === "union" &&
             (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
-        return {
+        return this.withBuiltinFunctionName({
           kind: "dynFrom",
           value: expr,
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
           ...this.builtinFunctionIdentity(expr),
-        };
+        });
       }
       return expr;
     }
@@ -12570,13 +12585,13 @@ export class Lowerer {
       ) {
         return {
           kind: "dynCheck",
-          value: {
+          value: this.withBuiltinFunctionName({
             kind: "dynFrom",
             value: expr,
             type: DYN,
             loc: expr.loc,
             ...this.builtinFunctionIdentity(expr),
-          },
+          }),
           type: expected,
           loc: expr.loc,
         };
@@ -13260,8 +13275,11 @@ export class Lowerer {
     // NamedEvaluation through a variable initializer) — inspect prints
     // [Function: name] and call errors spell it, like Node.
     if (e.kind === "dynFrom" && e.value.type.kind === "func" && e.fnName === undefined) {
+      const builtinName = this.workerTargets.length > 0 ? builtinValueNameOf(node, this) : null;
       const name = jsFuncNameOf(node, this);
-      if (name !== null) e = { ...e, fnName: name };
+      if (builtinName !== null && typeof builtinName !== "string") {
+        e = this.withBuiltinFunctionName({ ...e, fnName: builtinName.main }, builtinName);
+      } else if (name !== null) e = { ...e, fnName: name };
     }
     // A union the plain re-tag declined (stranded NON-unit arms): when the
     // node's CHECKER type proves those arms away, they trap instead — the
@@ -17025,7 +17043,7 @@ export class Lowerer {
       this.builtinCallableValueFns.set(key, fnName);
       this.builtinCallableValueNames.set(
         fnName,
-        fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+        builtinModuleValueName(this, fn) ?? display.slice(display.lastIndexOf(".") + 1),
       );
       if (fn.valueLength !== undefined)
         this.builtinCallableValueLengths.set(fnName, fn.valueLength);
@@ -17123,11 +17141,35 @@ export class Lowerer {
    * value. */
   builtinFunctionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
     if (expr.kind !== "closure") return {};
-    const name = this.builtinCallableValueNames.get(expr.fnName);
+    const names = this.builtinCallableValueNames.get(expr.fnName);
+    const name = typeof names === "string" ? names : names?.main;
     const length = this.builtinCallableValueLengths.get(expr.fnName);
     return {
       ...(name !== undefined ? { fnName: name } : {}),
       ...(length !== undefined ? { fnLength: length } : {}),
+    };
+  }
+
+  /** Keep the ordinary box unchanged unless its builtin has a different
+   * worker name. Both branches box the same adapter and preserve identity. */
+  withBuiltinFunctionName(
+    boxed: Extract<IrExpr, { kind: "dynFrom" }>,
+    explicitName?: BuiltinValueName,
+  ): IrExpr {
+    if (this.workerTargets.length === 0) return boxed;
+    const name =
+      explicitName ??
+      (boxed.value.kind === "closure"
+        ? this.builtinCallableValueNames.get(boxed.value.fnName)
+        : undefined);
+    if (name === undefined || typeof name === "string") return boxed;
+    return {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc: boxed.loc },
+      then: { ...boxed, fnName: name.main },
+      else_: { ...boxed, fnName: name.worker },
+      type: DYN,
+      loc: boxed.loc,
     };
   }
 
