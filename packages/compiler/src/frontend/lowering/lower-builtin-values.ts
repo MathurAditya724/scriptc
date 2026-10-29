@@ -8,6 +8,7 @@ import {
   UNDEFINED_T,
   arrayOf,
   type IrExpr,
+  type IrFunction,
   type IrLibFn,
   type IrStmt,
   type IrType,
@@ -16,6 +17,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile } from "../program.js";
 import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -582,6 +584,27 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     type: { kind: "func", params: [STRING], ret: DYN },
     loc,
   };
+  // A path family is a plain object holding Node's members in Node's
+  // order, so reflection over it (Object.keys, Object.assign, spreads,
+  // own-property checks) sees them.
+  if (module.startsWith("path/")) {
+    return {
+      kind: "libCall",
+      fn: "process.builtinObject",
+      args: [
+        strLit(module, loc),
+        box(getter),
+        {
+          kind: "arrayLit",
+          elems: PATH_MODULE_KEYS.map((key) => strLit(key, loc)),
+          type: arrayOf(STRING),
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    };
+  }
   return {
     kind: "libCall",
     fn: "process.builtinModule",
@@ -590,6 +613,27 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
     loc,
   };
 }
+
+/** Object.keys of Node's path.posix and path.win32. */
+const PATH_MODULE_KEYS = [
+  "resolve",
+  "normalize",
+  "isAbsolute",
+  "join",
+  "relative",
+  "toNamespacedPath",
+  "dirname",
+  "basename",
+  "extname",
+  "format",
+  "parse",
+  "matchesGlob",
+  "sep",
+  "delimiter",
+  "win32",
+  "posix",
+  "_makeLong",
+];
 
 /** A first-class loader uses the same native functions as direct imports.
  * Module handles cache values and preserve aliases without a JS engine. */
@@ -843,6 +887,108 @@ export function checkedNativeCallableValue(
     lowerer.liftedFns.push({ name: fnName, params, returnType: result, locals, body, loc });
   }
   return { kind: "closure", fnName, captures: [], type: funcType, loc };
+}
+
+/** Every builtin function value that becomes untyped boxes as its checked
+ * twin, under the builtin's name and length, wherever the boxing happens: a
+ * module handle's member, an assertion's argument, or a read of a binding
+ * whose only stores are that builtin (`const join = path.join`): a const
+ * local, or a module-level binding, whose stores are all visible here.
+ * An untyped caller then holds the value that validates its arguments as
+ * Node does, and it compares equal to the same builtin read anywhere else.
+ * A binding read keeps its own evaluation, so its TDZ check still runs. */
+export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[]): void {
+  const names = lowerer.builtinCallableValueNames;
+  if (names.size === 0) return;
+  const lengths = lowerer.builtinCallableValueLengths;
+  const builtin = (expr: IrExpr | null): expr is Extract<IrExpr, { kind: "closure" }> =>
+    expr !== null &&
+    expr.kind === "closure" &&
+    expr.captures.length === 0 &&
+    (names.has(expr.fnName) || lowerer.builtinCheckedValues.has(expr.fnName));
+  // Bindings and the one builtin closure they hold, or null when a binding
+  // stores anything else. Locals are keyed by their function.
+  const globals = new Set(lowerer.globalsList.map((g) => g.id));
+  const bound = new Map<string, Extract<IrExpr, { kind: "closure" }> | null>();
+  const note = (key: string, value: IrExpr | null): void => {
+    const previous = bound.get(key);
+    const next = builtin(value) ? value : null;
+    bound.set(
+      key,
+      previous === undefined || (previous !== null && next?.fnName === previous.fnName)
+        ? next
+        : null,
+    );
+  };
+  const localKey = (fn: IrFunction, id: string): string => `${fn.name}\u0000${id}`;
+  for (const fn of functions) {
+    const constLocals = new Set(fn.locals.filter((l) => !l.mutable).map((l) => l.id));
+    const keyOf = (id: string): string | null =>
+      constLocals.has(id) ? localKey(fn, id) : globals.has(id) ? id : null;
+    // Any other node naming a binding (a for-of target, a catch binding, an
+    // expression-level write) may store something else in it.
+    const other = (node: object): void => {
+      for (const field of ["localId", "catchLocalId"]) {
+        const id = (node as Record<string, unknown>)[field];
+        const key = typeof id === "string" ? keyOf(id) : null;
+        if (key) note(key, null);
+      }
+    };
+    everyStmtList(fn.body, {
+      expr: (expr) => {
+        if (expr.kind !== "varRef") other(expr);
+        return true;
+      },
+      stmt: (stmt) => {
+        const key = stmt.kind === "varDecl" || stmt.kind === "assign" ? keyOf(stmt.localId) : null;
+        if (stmt.kind === "varDecl" && key) {
+          if (stmt.init) note(key, stmt.init);
+        } else if (stmt.kind === "assign" && key) note(key, stmt.value);
+        else other(stmt);
+        return true;
+      },
+    });
+  }
+  const lifted = lowerer.liftedFns.length;
+  for (const fn of functions) {
+    fn.body = transformStmtList(fn.body, {
+      stmt: (stmt) => stmt,
+      expr: (expr) => {
+        if (expr.kind !== "dynFrom") return expr;
+        const read = expr.value.kind === "varRef" ? expr.value : null;
+        const source = read
+          ? (bound.get(localKey(fn, read.localId)) ?? bound.get(read.localId) ?? null)
+          : builtin(expr.value)
+            ? expr.value
+            : null;
+        if (!source) return expr;
+        const value = lowerer.checkedBuiltinValue(source);
+        const fnName =
+          expr.fnName ??
+          names.get(source.fnName) ??
+          (value.kind === "closure" ? names.get(value.fnName) : undefined);
+        const fnLength =
+          expr.fnLength ??
+          lengths.get(source.fnName) ??
+          (value.kind === "closure" ? lengths.get(value.fnName) : undefined);
+        const boxed: IrExpr = {
+          ...expr,
+          value,
+          ...(fnName !== undefined ? { fnName } : {}),
+          ...(fnLength !== undefined ? { fnLength } : {}),
+        };
+        if (!read) return boxed;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: read, loc: read.loc }],
+          result: boxed,
+          type: DYN,
+          loc: expr.loc,
+        };
+      },
+    });
+  }
+  functions.push(...lowerer.liftedFns.slice(lifted));
 }
 
 /** A JavaScript call of a builtin with named value parameters whose

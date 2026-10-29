@@ -3641,6 +3641,7 @@ function buildLibFnSignatures() {
     "process.versions": { argTypes: [], result: DYN },
     "process.builtinId": { argTypes: [DYN, arrayOf(STRING)], result: STRING },
     "process.builtinModule": { argTypes: [STRING, DYN], result: DYN },
+    "process.builtinObject": { argTypes: [STRING, DYN, arrayOf(STRING)], result: DYN },
     "process.builtinUnsupported": { argTypes: [STRING, STRING], result: DYN },
     /** A module namespace object as a checked-dynamic value
      * (scr_module_namespace_value): the module id, its sorted export names

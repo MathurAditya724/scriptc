@@ -304,6 +304,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "navigator.languages": "scr_navigator_languages",
   "navigator.platform": "scr_navigator_platform",
   "process.builtinModule": "scr_process_builtin_module",
+  "process.builtinObject": "scr_process_builtin_object",
   "process.builtinUnsupported": "scr_process_builtin_unsupported",
   "module.namespaceValue": "scr_module_namespace_value",
   "module.namespaceDyn": "scr_module_namespace_dyn_value",

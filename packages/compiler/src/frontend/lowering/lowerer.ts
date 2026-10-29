@@ -179,6 +179,7 @@ import {
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import {
+  boxBuiltinValuesChecked,
   lowerUtilTypeValue,
   checkedNativeCallableValue,
   pathModuleValue,
@@ -3420,8 +3421,12 @@ export class Lowerer {
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
-  /** Typed builtin adapters with a checked twin (checkedBuiltinValue). */
-  readonly builtinCheckedValues = new Map<string, () => IrExpr>();
+  /** Typed builtin adapters with a checked twin (checkedBuiltinValue): the
+   * builtin, its display name and the location the twin is lowered at. */
+  readonly builtinCheckedValues = new Map<
+    string,
+    { fn: BuiltinModuleFn; display: string; loc: SrcLoc }
+  >();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
    * of re-lowering, its checker type reads non-nullish (typeOf), and the
@@ -4117,6 +4122,7 @@ export class Lowerer {
       mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
       mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
+      irDataTable("builtinCheckedValues", this.builtinCheckedValues),
       mapTable("regionRunHelpers", this.regionRunHelpers),
       mapTable("internTableHelpers", this.internTableHelpers),
       functionTable(
@@ -9560,6 +9566,7 @@ export class Lowerer {
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. */
   finishModule(functions: IrFunction[]): LowerResult {
+    boxBuiltinValuesChecked(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
@@ -17039,9 +17046,7 @@ export class Lowerer {
       });
     }
     if (valueParams.some((param) => param.name !== undefined)) {
-      this.builtinCheckedValues.set(fnName, () =>
-        checkedNativeCallableValue(this, fn, display, loc),
-      );
+      this.builtinCheckedValues.set(fnName, { fn, display, loc });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
   }
@@ -17053,7 +17058,9 @@ export class Lowerer {
   checkedBuiltinValue(expr: IrExpr): IrExpr {
     const checked =
       expr.kind === "closure" ? this.builtinCheckedValues.get(expr.fnName) : undefined;
-    return checked ? checked() : expr;
+    return checked
+      ? checkedNativeCallableValue(this, checked.fn, checked.display, checked.loc)
+      : expr;
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

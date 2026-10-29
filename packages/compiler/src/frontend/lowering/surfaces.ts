@@ -2752,7 +2752,12 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.getBuiltinModule",
       kind: "node-builtin",
       name: "process.getBuiltinModule",
-      fns: ["process.builtinId", "process.builtinModule", "process.builtinUnsupported"],
+      fns: [
+        "process.builtinId",
+        "process.builtinModule",
+        "process.builtinObject",
+        "process.builtinUnsupported",
+      ],
       note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
     },
     {
