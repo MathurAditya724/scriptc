@@ -1527,13 +1527,15 @@ function statRepresentation(
 /** The `bigint` option member. The literal picks the representation —
  * BigIntStats for true, Stats for false — and the call's own type must
  * already agree with it, because a `Stats | BigIntStats`-valued flag has no
- * static member table. */
+ * static member table. Answers the member's lowered value when evaluating
+ * it can have an effect (`bigint: (count++, true)`), which the call then
+ * runs in its place among the options; null when it can be dropped. */
 function checkStatBigintOption(
   lowerer: Lowerer,
   value: ts.Expression,
   spelling: string,
   representation: "bigint" | "number" | null,
-): void {
+): IrExpr | null {
   const t = lowerer.typeOf(value);
   const literal = t.flags & ts.TypeFlags.BooleanLiteral ? lowerer.checker.typeToString(t) : null;
   if (literal === null) {
@@ -1550,6 +1552,8 @@ function checkStatBigintOption(
       "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
     );
   }
+  const lowered = lowerer.lowerExprExpecting(value, BOOL);
+  return isSafeToDiscard(lowered) ? null : lowered;
 }
 
 /** fs.statSync / fs.lstatSync(path, options). The options are an object
@@ -1658,6 +1662,10 @@ export function lowerFsStatOptionsCall(
       lowerer.noLowering(`${spelling} with this options value`, optsNode, "pass an object literal");
     }
   }
+  // The members in source order, when a bigint member has an effect: the
+  // throwIfNoEntry value ("throwIfNoEntry") and each effect.
+  const members: (IrExpr | "throwIfNoEntry")[] = [];
+  let bigintEffect = false;
   for (const p of ts.isObjectLiteralExpression(optsNode) ? optsNode.properties.nodes : []) {
     const m = optionMember(p);
     if (!m) {
@@ -1669,8 +1677,13 @@ export function lowerFsStatOptionsCall(
     }
     if (m.name === "throwIfNoEntry") {
       throwIfNoEntry = lowerer.lowerExprExpecting(m.value, BOOL);
+      members.push("throwIfNoEntry");
     } else if (m.name === "bigint") {
-      checkStatBigintOption(lowerer, m.value, spelling, representation);
+      const effect = checkStatBigintOption(lowerer, m.value, spelling, representation);
+      if (effect !== null) {
+        members.push(effect);
+        bigintEffect = true;
+      }
     } else {
       fenceOrDropOptionKey(
         lowerer,
@@ -1682,6 +1695,26 @@ export function lowerFsStatOptionsCall(
       );
     }
   }
+  // With a bigint member's effect, the path binds first, then the members
+  // run in source order (a runtime throwIfNoEntry into a local), then the
+  // stat; without one, the call evaluates its operands in that order itself.
+  const ordered = (stat: (pathArg: IrExpr, flag: IrExpr | null) => IrExpr): IrExpr => {
+    if (!bigintEffect) return stat(path, throwIfNoEntry);
+    const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc }];
+    let flag = throwIfNoEntry;
+    for (const member of members) {
+      if (member !== "throwIfNoEntry") {
+        stmts.push({ kind: "exprStmt", expr: member, loc: member.loc });
+      } else if (flag !== null && flag.kind !== "boolLit") {
+        const flagLocal = lowerer.declareHiddenLocal("%statThrowIfNoEntry", BOOL);
+        stmts.push({ kind: "varDecl", localId: flagLocal.id, init: flag, loc: flag.loc });
+        flag = varRef(flagLocal.id, BOOL, flag.loc);
+      }
+    }
+    const result = stat(varRef(pathLocal.id, STRING, loc), flag);
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
+  };
   if (callType?.kind === "stats" || callType?.kind === "bigintStats") {
     // A runtime flag that is false answers undefined, which a Stats result
     // cannot hold.
@@ -1692,7 +1725,14 @@ export function lowerFsStatOptionsCall(
         "the result must be Stats | undefined when throwIfNoEntry may be false",
       );
     }
-    return plainAfter(null);
+    if (!bigintEffect) return plainAfter(null);
+    return ordered((pathArg) => ({
+      kind: "libCall",
+      fn: plainFn,
+      args: [pathArg],
+      type: statsType,
+      loc,
+    }));
   }
   if (
     !def ||
@@ -1706,13 +1746,13 @@ export function lowerFsStatOptionsCall(
       `${spelling}(path, { throwIfNoEntry: false }) answers Stats | undefined`,
     );
   }
-  return {
+  return ordered((pathArg, flag) => ({
     kind: "libCall",
     fn: noFollow ? "fs.lstatProbeSync" : "fs.statProbeSync",
-    args: [path, throwIfNoEntry ?? boolLit(true, loc)],
+    args: [pathArg, flag ?? boolLit(true, loc)],
     type: callType!,
     loc,
-  };
+  }));
 }
 
 /** fs.fstatSync(fd, options): the descriptor form of the same snapshot.
@@ -1765,6 +1805,7 @@ export function lowerFsStatFdOptionsCall(
       `pass an object literal: ${spelling}(fd, { bigint: true })`,
     );
   }
+  const effects: IrExpr[] = [];
   for (const p of optsNode.properties.nodes) {
     const m = optionMember(p);
     if (!m) {
@@ -1775,7 +1816,8 @@ export function lowerFsStatFdOptionsCall(
       );
     }
     if (m.name === "bigint") {
-      checkStatBigintOption(lowerer, m.value, spelling, representation);
+      const effect = checkStatBigintOption(lowerer, m.value, spelling, representation);
+      if (effect !== null) effects.push(effect);
     } else {
       fenceOrDropOptionKey(
         lowerer,
@@ -1787,7 +1829,25 @@ export function lowerFsStatFdOptionsCall(
       );
     }
   }
-  return plain();
+  if (effects.length === 0) return plain();
+  // The descriptor binds first, then the bigint member's effect, then the stat.
+  const fdLocal = lowerer.declareHiddenLocal("%fstatFd", F64);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: fdLocal.id, init: fd, loc: fd.loc },
+      ...effects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc: expr.loc })),
+    ],
+    result: {
+      kind: "libCall",
+      fn: "fs.fstatSync",
+      args: [varRef(fdLocal.id, F64, loc)],
+      type: statsType,
+      loc,
+    },
+    type: statsType,
+    loc,
+  };
 }
 
 /** `d.isFile()` / `d.isDirectory()` / `d.isSymbolicLink()` on a Dirent-

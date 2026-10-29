@@ -77,3 +77,46 @@ if (present !== undefined) console.log(present.size, typeof present.ino, present
 // The Date members agree with the nanosecond members.
 console.log(st.atime.getTime() === Number(st.atimeNs / 1000000n));
 console.log(st.ctime instanceof Date, typeof st.ctimeMs, typeof st.ctimeNs);
+
+// A fractional millisecond of at least 0.5: Stats rounds its Date up to the
+// next millisecond, while a BigIntStats Date is its truncated *Ms member.
+const fractional = stamp + 0.0007;
+fs.utimesSync("data.txt", fractional, fractional);
+const rounded = fs.statSync("data.txt");
+const truncated = fs.statSync("data.txt", { bigint: true });
+console.log(rounded.mtime.getTime(), truncated.mtime.getTime(), truncated.mtimeMs);
+console.log(rounded.atime.getTime() - truncated.atime.getTime());
+console.log(
+  truncated.atime.getTime() === Number(truncated.atimeMs),
+  truncated.mtime.getTime() === Number(truncated.mtimeMs),
+  truncated.ctime.getTime() === Number(truncated.ctimeMs),
+  truncated.birthtime.getTime() === Number(truncated.birthtimeMs),
+);
+
+// The bigint option is evaluated like any option member: its effects run,
+// in member order, before the stat, and an exception it throws is the call's.
+let evaluated = "";
+function note(step: string): true {
+  evaluated += step;
+  return true;
+}
+function refuse(): true {
+  throw new Error("refused");
+}
+const counted = fs.statSync("data.txt", { bigint: note("s") });
+const linked = fs.lstatSync("data.txt", { bigint: note("l") });
+const byFd = fs.openSync("data.txt", "r");
+const described = fs.fstatSync(byFd, { bigint: note("f") });
+fs.closeSync(byFd);
+console.log(evaluated, typeof counted.size, typeof linked.size, typeof described.size);
+evaluated = "";
+const probed = fs.statSync("missing.txt", {
+  bigint: note("b"),
+  throwIfNoEntry: ((evaluated += "t"), false),
+});
+console.log(evaluated, probed === undefined);
+try {
+  fs.statSync("data.txt", { bigint: refuse() });
+} catch (error) {
+  console.log((error as Error).message);
+}

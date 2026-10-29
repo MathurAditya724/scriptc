@@ -1,7 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
-import { pathModuleValue } from "../lower-builtin-values.js";
+import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -310,7 +310,12 @@ export function lowerDynObjectLiteral(
       const builtin = lowerer.builtinNamespaceModuleOf(prop.expression);
       const raw =
         builtin === "path" || builtin === "path/posix" || builtin === "path/win32"
-          ? pathModuleValue(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
+          ? pathModuleSpreadSource(
+              lowerer,
+              builtin === "path" ? "path/posix" : builtin,
+              isNamespaceImport(lowerer, prop.expression),
+              locOf(prop),
+            )
           : !boxValue &&
               conditionalArms &&
               (conditionalSpreadOf(prop.expression) !== null ||
@@ -3674,4 +3679,13 @@ function rejectThisInObjectAccessor(lowerer: Lowerer, node: ts.Node): void {
     );
   }
   ts.forEachChild(node, (child) => rejectThisInObjectAccessor(lowerer, child));
+}
+
+/** Whether a spread source is an ES module namespace binding
+ * (`import * as path`); a default import, a require and a named
+ * sub-namespace are module objects. */
+function isNamespaceImport(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!ts.isIdentifier(expr)) return false;
+  const decl = lowerer.checker.getSymbolAtLocation(expr)?.declarations[0];
+  return decl !== undefined && ts.isNamespaceImport(decl);
 }

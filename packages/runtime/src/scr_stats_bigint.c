@@ -8,10 +8,13 @@
  * integers, the `*Ms` millisecond members (the truncated nanosecond
  * quotient, as the binding computes them) and the BigIntStats-only `*Ns`
  * nanosecond members (sec * 1e9 + nsec, exactly as scr_lib.c's dynamic
- * conversion does). The four time members are the base unit's Date reads.
- * Every function here answers +1 like the rest of the snapshot accessors. */
+ * conversion does). The four Date members are built from the `*Ms` member,
+ * as Node's getters do (new Date(Math.round(Number(this.atimeMs)))): the
+ * truncated millisecond, where Stats rounds its fractional one.
+ * Every bigint here is answered +1 like the rest of the snapshot accessors. */
 #include "scr_bigint.h"
 #include "scr_lib.h"
+#include "scr_number.h"
 #include "scr_stats_private.h"
 
 /* The binding hands its BigInt64Array signed values. */
@@ -82,3 +85,15 @@ ScrBigInt *scr_stats_big_ctime_ms(ScrStats *s) {
 ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s) {
   return scr_stats_big_ms_of(s, SCR_STATS_BIRTHTIME);
 }
+
+static double scr_stats_big_date_of(const ScrStats *s, int which) {
+  ScrBigInt *ms = scr_stats_big_ms_of(s, which);
+  double date = scr_date_new_ms(scr_bigint_to_f64(ms));
+  scr_bigint_release(ms);
+  return date;
+}
+
+double scr_stats_big_atime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_ATIME); }
+double scr_stats_big_mtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_MTIME); }
+double scr_stats_big_ctime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_CTIME); }
+double scr_stats_big_birthtime(ScrStats *s) { return scr_stats_big_date_of(s, SCR_STATS_BIRTHTIME); }

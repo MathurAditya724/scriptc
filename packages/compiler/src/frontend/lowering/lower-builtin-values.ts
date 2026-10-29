@@ -435,6 +435,79 @@ export function pathModuleValue(lowerer: Lowerer, module: string, loc: SrcLoc): 
   return moduleValue(lowerer, module, loc);
 }
 
+/** Node's own keys of the node:path module objects (path, path.posix and
+ * path.win32), in order; `_makeLong` is the same function as
+ * toNamespacedPath. */
+const PATH_MODULE_KEYS = [
+  "resolve",
+  "normalize",
+  "isAbsolute",
+  "join",
+  "relative",
+  "toNamespacedPath",
+  "dirname",
+  "basename",
+  "extname",
+  "format",
+  "parse",
+  "matchesGlob",
+  "sep",
+  "delimiter",
+  "win32",
+  "posix",
+  "_makeLong",
+] as const;
+
+/** What a spread of a node:path namespace copies: the module object's own
+ * members in Node's order, each read through the module value, so the copy
+ * holds the same functions (`{ ...path }.join === path.join`). An ES module
+ * namespace (`import * as path`) has its keys sorted and also `default`,
+ * the module object. Members the module value does not answer (format and
+ * parse have no function values) are left out, as they are of the value. */
+export function pathModuleSpreadSource(
+  lowerer: Lowerer,
+  module: string,
+  namespace: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  const local = lowerer.declareHiddenLocal("%pathModule", DYN);
+  const value = varRef(local.id, DYN, loc);
+  const answered = (key: string): boolean =>
+    key === "default" ||
+    key === "posix" ||
+    key === "win32" ||
+    builtinModuleConstOf(lowerer, module, key) !== undefined ||
+    lowerer.lowerBuiltinCallableValue(
+      { module, member: key === "_makeLong" ? "toNamespacedPath" : key },
+      loc,
+    ) !== null;
+  const keys = (namespace ? [...PATH_MODULE_KEYS, "default"].sort() : [...PATH_MODULE_KEYS]).filter(
+    answered,
+  );
+  const fields = keys.map((key) => ({
+    key: strLit(key, loc),
+    value:
+      key === "default"
+        ? value
+        : ({
+            kind: "dynKeyGet",
+            value,
+            key: strLit(key === "_makeLong" ? "toNamespacedPath" : key, loc),
+            type: DYN,
+            loc,
+          } as IrExpr),
+  }));
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local.id, init: pathModuleValue(lowerer, module, loc), loc },
+    ],
+    result: { kind: "dynObjLit", fields, type: DYN, loc },
+    type: DYN,
+    loc,
+  };
+}
+
 export function utilTypesModuleValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   return moduleValue(lowerer, "util/types", loc);
 }
