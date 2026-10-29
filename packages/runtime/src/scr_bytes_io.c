@@ -167,6 +167,7 @@ static ScrDyn *scr_fs_cb_arg(ScrDyn *const *args, size_t argc, size_t index) {
 }
 
 static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length);
+static double scr_fs_int32(double n);
 
 static ScrDyn *scr_fs_cb_option(const ScrDyn *options, const char *name) {
   if (scr_fs_dyn_absent(options)) return scr_dyn_retain(scr_dyn_undefined());
@@ -1131,30 +1132,28 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       if (ownedBuffer) length = scr_fs_cb_option_number(options, "length", length);
       else if (readOp && count >= 4) length = readLength;
       else length = scr_fs_cb_number(ARG(3), "length", length);
-      /* A bigint read position takes readSync's range check and reads at
-       * its exact value: a double would round it past 2^53. */
-      ScrDyn *bigPosition = NULL;
-      if (readOp) {
-        ScrDyn *value = ownedBuffer ? scr_fs_cb_option(options, "position")
-                                    : scr_dyn_retain(count > 4 ? ARG(4) : scr_dyn_undefined());
-        if (value && value->kind == SCR_DYN_BIGINT) bigPosition = value;
-        else scr_dyn_release(value);
-      }
-      double position = bigPosition ? -1
-                        : ownedBuffer ? scr_fs_cb_option_number(options, "position", -1)
-                                      : scr_fs_cb_number(ARG(4), "position", -1);
+      /* The position option is read once, so a getter runs once. A bigint
+       * read position takes readSync's range check against `length |= 0`
+       * and reads at its exact value: a double would round it past 2^53. */
+      ScrDyn *positionValue = ownedBuffer ? scr_fs_cb_option(options, "position")
+                                          : scr_dyn_retain(ARG(4));
+      bool bigPosition = readOp && positionValue && positionValue->kind == SCR_DYN_BIGINT;
+      double position = bigPosition || !positionValue
+                            ? -1
+                            : scr_fs_cb_number(positionValue, "position", -1);
       if (!scr_exc_pending()) {
         if (bigPosition) {
+          double count32 = scr_fs_int32(length);
           if (scr_fs_read_offset_chk(offset) &&
-              scr_fs_bigint_position_chk(bigPosition->v.bigint, length))
-            result = scr_dyn_new_num(scr_fs_read_sync_at(fd, bytes, offset, length,
-                                                         scr_bigint_to_i64(bigPosition->v.bigint)));
+              scr_fs_bigint_position_chk(positionValue->v.bigint, count32))
+            result = scr_dyn_new_num(scr_fs_read_sync_at(fd, bytes, offset, count32,
+                                                         scr_bigint_to_i64(positionValue->v.bigint)));
         } else {
           result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position)
                                           : scr_fs_write_sync(fd, bytes, offset, length, position));
         }
       }
-      scr_dyn_release(bigPosition);
+      scr_dyn_release(positionValue);
     }
     scr_bytes_release(bytes);
     /* The completion retains the original buffer, including options.buffer. */
@@ -1938,14 +1937,16 @@ static bool scr_fs_length_int32(const ScrDyn *length, double *out) {
   } else if (!scr_dyn_number_coerce_js(length, &n)) {
     return false;
   }
-  if (!isfinite(n)) {
-    *out = 0;
-    return true;
-  }
+  *out = scr_fs_int32(n);
+  return true;
+}
+
+/* ToInt32 of a number: 0 for NaN and the infinities. */
+static double scr_fs_int32(double n) {
+  if (!isfinite(n)) return 0;
   double m = fmod(trunc(n), 4294967296.0);
   if (m < 0) m += 4294967296.0;
-  *out = m >= 2147483648.0 ? m - 4294967296.0 : m;
-  return true;
+  return m >= 2147483648.0 ? m - 4294967296.0 : m;
 }
 
 /* A bigint read position in [-1n, 2n ** 63n - 1n - BigInt(length)]
