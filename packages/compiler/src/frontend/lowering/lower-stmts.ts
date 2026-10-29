@@ -2617,7 +2617,7 @@ export function lowerDestructuringDecl(
     init.type.kind === "dyn" &&
     ts.isObjectBindingPattern(decl.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    startsWithRuntimeKey(lowerer, decl.name) &&
+    (decl.name.elements.nodes.length === 0 || startsWithRuntimeKey(lowerer, decl.name)) &&
     destrSpellingOf(decl.initializer) !== null;
   if (
     jsRuntimeKeyCheck ||
@@ -3181,6 +3181,39 @@ export function lowerBindingPattern(
     // every statically non-nullish kind, record or not (the assignment
     // path's rule); possibly-nullish sources would throw in JS and keep
     // a fence.
+    //
+    // A CHECKED-DYNAMIC source still owes that step at runtime: an empty
+    // object pattern over null/undefined throws RequireObjectCoercible,
+    // and an empty array pattern throws GetIterator's "is not iterable".
+    // Nothing else about the pattern is observable, so the fence is the
+    // whole lowering.
+    if (srcType.kind === "dyn") {
+      const unitLoc = locOf(pattern);
+      const isObject = ts.isObjectBindingPattern(pattern);
+      for (const unit of ["null", "undefined"] as const) {
+        // V8 describes an argument-derived source by its type ("object
+        // null"); a bare non-empty pattern names its source instead, but
+        // those reads throw on their own before this check could fire.
+        const described = unit === "null" ? "object null" : "undefined";
+        const message = isObject
+          ? `Cannot destructure '${described}' as it is ${unit}.`
+          : `${described} is not iterable (cannot read property Symbol(Symbol.iterator))`;
+        out.push({
+          kind: "if",
+          cond: { kind: "dynTest", test: unit, value: srcRef(), type: BOOL, loc: unitLoc },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: nodeThrowExpr(1, "", message, VOID, unitLoc),
+              loc: unitLoc,
+            },
+          ],
+          else_: null,
+          loc: unitLoc,
+        });
+      }
+      return;
+    }
     if (
       isUnitType(srcType) ||
       (srcType.kind === "union" &&
