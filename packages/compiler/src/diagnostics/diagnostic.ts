@@ -442,6 +442,23 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
   };
 }
 
+/** SC8023 — the build that ran fenced packages as Node islands failed, so
+ * the program was built natively with those runtime fences (each throws
+ * when reached). A warning on the native build, with the island build's
+ * first error. */
+export function nodeIslandRetryFailedDiag(
+  packages: readonly string[],
+  first: ScrDiagnostic,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8023",
+    message: `running ${packages.map((p) => `'${p}'`).join(", ")} in Node islands failed to compile (${first.code} at ${first.loc.file}:${first.loc.start}: ${first.message}); built natively instead, where their runtime fences throw when reached`,
+    loc,
+    hint: "fix the island build's error, or mark the packages with --node-island=<pkg> to see every error",
+  };
+}
+
 /** SC8030–SC8033 — a type patch (`scriptc.typePatches`) that did not
  * apply as written: no range covers the installed copy (SC8030), its
  * selector matches nothing (SC8031), the declaration already has the type

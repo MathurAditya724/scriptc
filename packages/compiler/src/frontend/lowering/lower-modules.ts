@@ -3,7 +3,7 @@ import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
-import { collectIslandImport } from "./lower-node-island.js";
+import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -732,7 +732,10 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       }
     }
   }
-  for (const fp of parts) collectDynamicImports(lowerer, fp.sf);
+  for (const fp of parts) {
+    collectDynamicImports(lowerer, fp.sf);
+    collectIslandRequires(lowerer, fp.sf);
+  }
 }
 
 /** Literal dynamic-import collection: every

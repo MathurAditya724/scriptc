@@ -413,10 +413,32 @@ export function collectIslandImport(
   // module evaluated.
   const clause = ts.isImportDeclaration(stmt) ? stmt.importClause : undefined;
   const named = clause?.namedBindings;
+  const snapshotNames: string[] = [];
   if (!binding.esm && named !== undefined && ts.isNamedImports(named)) {
     for (const el of named.elements.nodes) {
       if (el.isTypeOnly) continue;
-      const name = el.propertyName?.text ?? el.name.text;
+      snapshotNames.push(el.propertyName?.text ?? el.name.text);
+    }
+  }
+  // A CommonJS namespace import's members are the same snapshot: the
+  // members the file reads (`ns.name`).
+  if (!binding.esm && named !== undefined && ts.isNamespaceImport(named)) {
+    const nsSymbol = lowerer.checker.getSymbolAtLocation(named.name);
+    ts.walkPreorder(sf, (node) => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        ts.isIdentifier(node.name) &&
+        node.expression.text === named.name.text &&
+        lowerer.checker.getSymbolAtLocation(node.expression) === nsSymbol &&
+        !snapshotNames.includes(node.name.text)
+      )
+        snapshotNames.push(node.name.text);
+      return undefined;
+    });
+  }
+  {
+    for (const name of snapshotNames) {
       if (name === "default") continue;
       let g = binding.snapshots.get(name);
       if (g === undefined) {
@@ -451,6 +473,7 @@ function islandGet(target: IrExpr, key: string, loc: SrcLoc): IrExpr {
 }
 
 type IslandBinding =
+  | { kind: "required"; module: IslandModuleBinding }
   | { kind: "namespace"; module: IslandModuleBinding }
   | { kind: "default"; module: IslandModuleBinding }
   | { kind: "named"; module: IslandModuleBinding; name: string };
@@ -487,7 +510,13 @@ function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding 
     const name = decl.propertyName?.text ?? decl.name.text;
     binding = name === "default" ? "default" : { name };
   } else {
-    return null;
+    // `const x = require("pkg")` (a CommonJS module of a native package
+    // requiring an island package): x is module.exports.
+    const spec = requireSpecOf(lowerer, decl);
+    if (spec === null) return null;
+    const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
+    const module = path === null ? undefined : lowerer.islandModules.get(path);
+    return module === undefined ? null : { kind: "required", module };
   }
   const spec = moduleSpecifierOf(importDecl);
   if (spec === null || importDecl === undefined) return null;
@@ -514,6 +543,8 @@ function islandBindingValue(
 ): IrExpr {
   const ns = varRef(b.module.global.id, DYN, loc);
   switch (b.kind) {
+    case "required":
+      return ns;
     case "namespace":
       if (!b.module.esm)
         boundaryFail(lowerer, "the namespace object of a CommonJS island module as a value", node);
@@ -624,6 +655,8 @@ function copiedType(lowerer: Lowerer, t: IrType): boolean {
     case "bigint":
     case "nullT":
     case "undefinedT":
+    // Buffers and typed arrays share their memory with the V8 view.
+    case "bytes":
       return true;
     case "union": {
       const def = lowerer.unions.get(t.unionId);
@@ -844,11 +877,20 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       // NI-5: the runtime exports dyn objects by reference and copies only
       // primitives, strings and (for now) arrays.
       return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
-    case "refused":
+    case "refused": {
+      const type = lowerer.typeOf(node);
+      // A type parameter the instance binds to dyn (a generic function
+      // over island types, `<T extends TSchema>`): its values are dyn
+      // values, and they cross the way `any` values do.
+      if (
+        (type.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+        lowerer.typeParamResolver(type)?.kind === "dyn"
+      )
+        return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
       // NI-5: closures, promises, records and class instances cross by
       // reference (scr_node_island_export.c): their dyn boxes keep the
       // native referent, and the closure's thunk checks its arguments.
-      if (exportedByReference(lowerer, lowerer.typeOf(node))) {
+      if (exportedByReference(lowerer, type)) {
         const lowered = lowerer.lowerExpr(node);
         const value = lowerer.coerceToExpected(lowered, DYN);
         return lowered.type.kind === "object"
@@ -857,9 +899,10 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
       }
       return boundaryFail(
         lowerer,
-        `a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' value (a native object would cross as a copy and lose its identity)`,
+        `a '${lowerer.checker.typeToString(type)}' value (a native object would cross as a copy and lose its identity)`,
         node,
       );
+    }
   }
 }
 
@@ -1041,6 +1084,11 @@ function freshLiteral(
   node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
 ): IrExpr {
   const loc = locOf(node);
+  // Spreads, methods, accessors and computed keys: the literal lowers as
+  // the program's own object, which crosses by reference (NI-5 exports);
+  // nothing else holds it, so that is exact.
+  if (!plainLiteral(node))
+    return lowerer.coerceToExpected(lowerer.lowerExprExpecting(node, DYN), DYN);
   if (ts.isArrayLiteralExpression(node)) {
     const elems = node.elements.nodes.map((el) => {
       if (ts.isSpreadElement(el) || ts.isOmittedExpression(el))
@@ -1324,7 +1372,7 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
       if (!isForeignExpr(lowerer, callee.expression)) return null;
       lowerer.usesNodeIsland = true;
-      const target = islandReceiver(lowerer, callee.expression, callee.name.text, loc);
+      const target = islandReceiver(lowerer, callee.expression, callee.name.text, loc, true);
       if (target.direct !== undefined) {
         return fromIsland(
           lowerer,
@@ -1603,12 +1651,14 @@ function islandCompoundAssign(
 
 /** The receiver of a member operation on an island value. A CommonJS
  * namespace binding's members are module.exports' (and `default` is
- * module.exports itself), answered directly. */
+ * module.exports itself), answered directly; a call of a member keeps
+ * module.exports as its receiver, so it goes through the method call. */
 function islandReceiver(
   lowerer: Lowerer,
   receiver: ts.Expression,
   member: string,
   loc: SrcLoc,
+  call = false,
 ): { value: IrExpr; direct?: IrExpr } {
   const inner = stripTypeWrappers(receiver);
   if (ts.isIdentifier(inner)) {
@@ -1616,6 +1666,9 @@ function islandReceiver(
     if (b !== null && b.kind === "namespace" && !b.module.esm) {
       const exports = varRef(b.module.global.id, DYN, loc);
       if (member === "default") return { value: exports, direct: exports };
+      const snapshot = b.module.snapshots.get(member);
+      if (snapshot !== undefined && !call)
+        return { value: exports, direct: varRef(snapshot.id, DYN, loc) };
       return { value: exports };
     }
   }
@@ -1941,6 +1994,82 @@ export function lowerIslandSuperMethodCall(
     loc,
   };
   return fromIsland(lowerer, raw, call);
+}
+
+/** A literal freshLiteral copies member by member: identifier or string
+ * keys with values, shorthand properties, array elements without spreads
+ * or holes. */
+function plainLiteral(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
+  if (ts.isArrayLiteralExpression(node))
+    return node.elements.nodes.every(
+      (el) => !ts.isSpreadElement(el) && !ts.isOmittedExpression(el),
+    );
+  return node.properties.nodes.every(
+    (p) =>
+      (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) ||
+      ts.isShorthandPropertyAssignment(p),
+  );
+}
+
+/** The specifier of `x = require("spec")` (a variable declaration binding
+ * an identifier to a literal require), or null. */
+function requireSpecOf(lowerer: Lowerer, decl: ts.Node): string | null {
+  if (
+    !ts.isVariableDeclaration(decl) ||
+    !ts.isIdentifier(decl.name) ||
+    decl.initializer === undefined
+  )
+    return null;
+  // Only a const keeps the module: a let or var can be reassigned.
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) return null;
+  let init: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(init)) init = init.expression;
+  if (
+    !ts.isCallExpression(init) ||
+    !ts.isIdentifier(init.expression) ||
+    init.expression.text !== "require" ||
+    init.arguments.nodes.length !== 1
+  )
+    return null;
+  // The global require, not a function of the program named require.
+  if (
+    lowerer.checker
+      .getSymbolAtLocation(init.expression)
+      ?.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
+  )
+    return null;
+  const arg = init.arguments.nodes[0]!;
+  return ts.isStringLiteralLike(arg) ? arg.text : null;
+}
+
+/** Top-level `const x = require("pkg")` statements of island packages in a
+ * compiled module (a native package requiring an island package): load the
+ * island module in the module's %init prelude (shortcut: before the body,
+ * not at the statement). */
+export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return;
+  for (const stmt of sf.statements.nodes) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const decl of stmt.declarationList.declarations.nodes) {
+      const spec = requireSpecOf(lowerer, decl);
+      if (spec === null) continue;
+      const path = islandModuleFile(islands, sf.fileName, spec, "require");
+      if (path === null) continue;
+      lowerer.usesNodeIsland = true;
+      const loc = locOf(decl);
+      const binding = islandModuleGlobal(lowerer, path);
+      const actions = lowerer.jsonInitActions.get(sf) ?? [];
+      lowerer.jsonInitActions.set(sf, actions);
+      actions.push({
+        kind: "assign",
+        localId: binding.global.id,
+        value: loadIslandModule(lowerer, path, loc),
+        loc,
+      });
+    }
+  }
 }
 
 /* `x instanceof Error` for values that may be island objects (NI-5c). */
