@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { nativeCodegenTarget, nativeHelperForTarget } from "../src/backend/targets.js";
 
 const execFileAsync = promisify(execFile);
+const isElf = (object: Buffer) => object.subarray(0, 4).equals(Buffer.from("\x7fELF", "latin1"));
 const target = nativeCodegenTarget();
 const helperSpec = target === null ? null : nativeHelperForTarget(target);
 const helper = (() => {
@@ -327,7 +328,9 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
         use: merged,
       });
       const bytes = Buffer.concat(await Promise.all(objects.map((object) => readFile(object))));
-      expect(bytes.includes(".text.hot.main")).toBe(true);
+      // ELF objects name each function's section by its profile temperature;
+      // Mach-O sections carry no such prefix.
+      if (isElf(bytes)) expect(bytes.includes(".text.hot.main")).toBe(true);
       const optimized = await link(dir, objects, "laidout");
       expect(await run(optimized, 1)).toBe(inlinedExit(1));
       expect(await run(optimized, 3)).toBe(inlinedExit(3));
@@ -497,8 +500,12 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
         recovered: 1,
       });
       expect(await run(await link(dir, recovered.outputs, "recovered"), 2)).toBe(expectedExit(2));
+      // The recovered counts move f4 into the hot section. ELF objects name
+      // it (.text.hot.); Mach-O sections carry no such prefix, so there the
+      // two builds are the same.
       const bytes = (paths: string[]) => Promise.all(paths.map((path) => readFile(path)));
-      expect(await bytes(recovered.outputs)).not.toEqual(await bytes(stale.outputs));
+      const recoveredBytes = await bytes(recovered.outputs);
+      if (isElf(recoveredBytes[0]!)) expect(recoveredBytes).not.toEqual(await bytes(stale.outputs));
 
       // The block counts key the partition cache.
       const before = await cacheEntries(cache);
