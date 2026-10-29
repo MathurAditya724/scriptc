@@ -3423,20 +3423,25 @@ ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
  * platform mutex publishes each result before the loop removes it from the
  * completion queue. */
 #if !defined(SCR_LIB) && !defined(__wasi__)
-/* The completion wake: a worker signals it once per published completion,
+/* The completion wake: a worker signals it when it publishes a completion,
  * so the loop's sleep ends for the completion — a pipe the poll(2) sleep
- * watches on POSIX, an auto-reset event the Windows sleep waits on. */
+ * watches on POSIX, an auto-reset event the Windows sleep waits on. On
+ * POSIX, `posted` (guarded by the queue lock) records that the pipe holds
+ * a byte: a worker writes one only when none is there, and the loop reads
+ * it when it takes the last completion, so the pipe holds a byte exactly
+ * while completions wait. */
 typedef struct ScrFsRenameWake {
 #ifdef _WIN32
   HANDLE event; /* NULL until created */
 #else
   int fds[2]; /* -1 until created */
+  bool posted;
 #endif
 } ScrFsRenameWake;
 #ifdef _WIN32
 #define SCR_FS_RENAME_WAKE_NONE {NULL}
 #else
-#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}}
+#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}, false}
 #endif
 #ifdef SCR_WORKERS
 typedef struct ScrFsRenameOwner ScrFsRenameOwner;
@@ -3530,28 +3535,29 @@ static void scr_fs_rename_wake_open(ScrFsRenameWake *wake) {
 #endif
 }
 
+/* Called with the queue lock held. */
 static void scr_fs_rename_wake_post(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   if (wake->event != NULL) (void)SetEvent(wake->event);
 #else
-  if (wake->fds[1] >= 0) {
+  if (wake->fds[1] >= 0 && !wake->posted) {
     char byte = 1;
-    ssize_t n = write(wake->fds[1], &byte, 1); /* a full pipe already wakes the loop */
-    (void)n;
+    wake->posted = write(wake->fds[1], &byte, 1) == 1;
   }
 #endif
 }
 
-/* POSIX: empty the pipe before taking the queue, so a completion published
- * afterwards leaves its byte for the next poll. The Windows event resets
- * when a wait consumes it. */
+/* POSIX, with the queue lock held: the loop took the last completion, so
+ * the pipe's byte is read and the next completion writes a new one. The
+ * Windows event resets when a wait consumes it. */
 static void scr_fs_rename_wake_drain(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   (void)wake;
 #else
-  if (wake->fds[0] < 0) return;
+  if (wake->fds[0] < 0 || !wake->posted) return;
+  wake->posted = false;
   char buf[64];
-  while (read(wake->fds[0], buf, sizeof buf) > 0) {
+  while (read(wake->fds[0], buf, sizeof buf) == (ssize_t)sizeof buf) {
   }
 #endif
 }
@@ -3661,6 +3667,18 @@ static DWORD WINAPI scr_fs_rename_worker(LPVOID payload) {
 #else
 static void *scr_fs_rename_worker(void *payload) {
   (void)payload;
+  /* A pool thread keeps SIGPIPE and SIGXFSZ blocked: its file writes then
+   * report EPIPE and EFBIG without changing the signal mask per write
+   * (scr_fs_write_once). */
+  sigset_t write_set;
+  sigemptyset(&write_set);
+#ifdef SIGPIPE
+  sigaddset(&write_set, SIGPIPE);
+#endif
+#ifdef SIGXFSZ
+  sigaddset(&write_set, SIGXFSZ);
+#endif
+  (void)pthread_sigmask(SIG_BLOCK, &write_set, NULL);
   scr_fs_rename_worker_loop();
   return NULL;
 }
@@ -3759,13 +3777,13 @@ static bool scr_fs_renames_dispatch(void) {
 #ifdef SCR_WORKERS
   if (!scr_fs_rename_owner) return false;
 #endif
-  scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_enter();
   ScrFsRenameOp *op = scr_fs_rename_done;
   if (op != NULL) {
     scr_fs_rename_done = op->next;
     if (scr_fs_rename_done == NULL) scr_fs_rename_done_tail = &scr_fs_rename_done;
   }
+  if (scr_fs_rename_done == NULL) scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_leave();
   if (op == NULL) return false;
   scr_fs_rename_pending_count--;
