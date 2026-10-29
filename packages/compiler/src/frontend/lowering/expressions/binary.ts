@@ -354,6 +354,31 @@ function literalDefault(node: ts.Expression): boolean {
   );
 }
 
+/** A fresh object literal (parentheses allowed) one of whose property
+ * values, at any literal depth, is `new Map()` or `new Set()` of the
+ * standard library with neither arguments nor type arguments. */
+function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boolean {
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isObjectLiteralExpression(value)) return false;
+  return value.properties.nodes.some((property) => {
+    if (!ts.isPropertyAssignment(property)) return false;
+    let inner = property.initializer;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (ts.isObjectLiteralExpression(inner)) return untypedCollectionFallback(lowerer, inner);
+    if (
+      !ts.isNewExpression(inner) ||
+      !ts.isIdentifier(inner.expression) ||
+      (inner.arguments?.nodes.length ?? 0) !== 0 ||
+      (inner.typeArguments?.nodes.length ?? 0) !== 0
+    )
+      return false;
+    const symbol = lowerer.resolveValueSymbol(inner.expression);
+    const name = symbol ? ts.symbolName(symbol) : "";
+    return symbol !== null && lowerer.isStdlibSymbol(symbol) && (name === "Map" || name === "Set");
+  });
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -387,6 +412,24 @@ export function lowerNullishPair(
   // arm that has no first-class union representation.
   const fresh = rest.length === 1 ? lowerer.emptyCollectionFor(expr.right, rest[0]!) : null;
   if (fresh) return { kind: "nullish", left, right: fresh, type: fresh.type, loc };
+  // `optionalRecord ?? { a: 1, items: new Map() }`: a fresh fallback literal
+  // whose untyped empty collections (`new Map()`, `new Set()` without type
+  // arguments, which the checker types `Map<any, any>`) leave the checker's
+  // join as a second record arm. When the literal is assignable to the
+  // left's record, it builds as that record, so the collections take its
+  // element types and the result keeps one layout.
+  if (
+    rest.length === 1 &&
+    rest[0]!.kind === "record" &&
+    untypedCollectionFallback(lowerer, expr.right) &&
+    lowerer.checker.isTypeAssignableTo(
+      lowerer.typeOf(expr.right),
+      lowerer.checker.getNonNullableType(lowerer.typeOf(expr.left)),
+    )
+  ) {
+    const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
+    return { kind: "nullish", left, right, type: rest[0]!, loc };
+  }
   let type = lowerer.irTypeOf(expr);
   // A runtime-optional read can reach the default even when declarations
   // call the left side present. Preserve a differently typed primitive

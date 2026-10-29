@@ -32,6 +32,7 @@ import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
+import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
 import { isPrivateSplitConsumer } from "./split-consumers.js";
@@ -6469,6 +6470,19 @@ export function lowerVarDecl(
         typeInvolvesWebStream(lowerer, lowerer.typeOf(decl.name))))
   )
     type = DYN;
+  // An unannotated TypeScript binding whose checker type carries `any`
+  // inference residue (`Map<any, any>` from an untyped `new Map()` joined
+  // into the initializer's type) takes the initializer's own layout when
+  // that layout replaces only the residue: `any` admits every use, and the
+  // value has that layout.
+  if (
+    !decl.type &&
+    type !== null &&
+    !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !typeEquals(type, init.type) &&
+    anyResidueReplacedBy(lowerer, type, init.type)
+  )
+    type = init.type;
   // A const whose initializer has another record or array layout than the
   // binding's type keeps the initializer's layout: converting would copy the
   // value, so the binding would not be the value its initializer names.
