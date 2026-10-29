@@ -1095,6 +1095,11 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value);
  * the programs that link it. */
 ScrDyn *scr_dyn_freeze_data(ScrDyn *value);
 bool scr_dyn_is_frozen(const ScrDyn *value);
+/* Whether a record checked from `value` is frozen: `value` is. It answers
+ * for every value, where scr_dyn_is_frozen refuses values without a modeled
+ * integrity level: those are not frozen, as Object.freeze refuses them. A
+ * proxy is frozen exactly when its target is (the proxy invariants). */
+bool scr_dyn_checked_record_frozen(const ScrDyn *value);
 ScrDyn *scr_dyn_new_bigint(ScrBigInt *value); /* borrows and retains value */
 ScrDyn *scr_dyn_new_symbol(ScrSym *value); /* borrows and retains value */
 ScrSym *scr_sym_well_known(ScrStr *name);

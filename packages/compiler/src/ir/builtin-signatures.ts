@@ -2,6 +2,7 @@ import type { IrType } from "./ir.js";
 import { BIGINT_T } from "./ir.js";
 import {
   arrayOf,
+  BIGINT_STATS_T,
   BOOL,
   BYTES_U8,
   bytesOf,
@@ -204,6 +205,9 @@ function buildLibFnSignatures() {
     "nodeIsland.applyTo": { argTypes: [DYN, DYN, DYN], result: DYN },
     "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
+    /** Array.isArray of a dyn value in a program with Node islands: island
+     * arrays answer true too. */
+    "nodeIsland.isArray": { argTypes: [DYN], result: BOOL },
     /** NI-5: a class instance crossing into an island, with the builder of
      * its class's method table (run once per class). Answers the value. */
     "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
@@ -1387,6 +1391,39 @@ function buildLibFnSignatures() {
     "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
     "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
     "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
+    /** BigIntStats (statSync with `{ bigint: true }`): the same snapshot
+     * handle under Node's bigint member table — every number member of Stats
+     * (the integers, `*Ms` and the BigIntStats-only `*Ns`) answers `bigint`;
+     * only the four time members stay `Date`s. */
+    "bigstats.isFile": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isDirectory": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isSymbolicLink": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isBlockDevice": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isCharacterDevice": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isFIFO": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isSocket": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.size": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.dev": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ino": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.blocks": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.nlink": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mode": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.uid": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.gid": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.rdev": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.blksize": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mtimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ctimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.birthtimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ctimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.birthtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
     // The wider sync fs slice (unlink/chmod/chown/copyfile and the
     // mode-carrying write/mkdir forms).
     /** The wider sync fs slice (scr_lib.c), all throwing catchably with
@@ -3608,6 +3645,8 @@ function buildLibFnSignatures() {
     "process.pid": { argTypes: [], result: F64 },
     "dyn.this": { argTypes: [], result: DYN },
     "dyn.generatorThis": { argTypes: [], result: DYN },
+    /** A sloppy-mode function's `this` from its receiver: the global object
+     * for undefined and null, else the receiver. Never throws. */
     "process.getuid": { argTypes: [], result: F64 },
     "process.getgid": { argTypes: [], result: F64 },
     /** geteuid(2) / getegid(2) / getgroups(2) (the effective gid appended
@@ -5346,6 +5385,7 @@ function buildLibFnSignatures() {
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */
     "process.isTTY": { argTypes: [F64], result: BOOL },
+    "process.isTTYValue": { argTypes: [DYN], result: BOOL },
     // Like process.envGet: the result is the module's interned
     // `number | undefined` union — checked by arms in the libCall case.
     /** Terminal width over an fd literal (1/2 — process.stdout/stderr

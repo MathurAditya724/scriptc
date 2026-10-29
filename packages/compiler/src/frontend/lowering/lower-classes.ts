@@ -3451,7 +3451,15 @@ export function collectClassShapeInner(
             if (shape.bodyType) shape.bodyType = DYN;
           }
           ft.params = shapes.map((shape) => shape.type);
-          if (ft.ret.kind !== "void") ft.ret = DYN;
+          // A GENERATOR method's result is the suspended generator its spawn
+          // wrapper answers, so the generator kind IS the checked-crossable
+          // ABI: dynFrom boxes a generator by reference and dyn calls resume
+          // it through the dyn generator ops. Replacing it with plain DYN
+          // would leave the method no representation at all (the generator
+          // branch below needs the channels to build its metadata), which
+          // fenced every `c.m` read on a prototype-accessed class. Only the
+          // ARGUMENTS cross as checked values here.
+          if (ft.ret.kind !== "void" && member.asteriskToken === undefined) ft.ret = DYN;
         }
         // JS subclasses can add parameters to a method. Reserve checked
         // argument slots in the base before constructing its vtable; shorter

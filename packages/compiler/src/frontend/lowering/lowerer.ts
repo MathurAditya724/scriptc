@@ -288,6 +288,7 @@ import {
   noLoweringDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
+  stdlibSnapshotValueUseDiag,
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
   unionMismatchDiag,
@@ -2106,6 +2107,67 @@ function anyPiecedFuncType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType 
  * their own name, anonymous function/arrow expressions their
  * NamedEvaluation home (a variable initializer or property assignment).
  * Null when nothing names the value (the box stays anonymous). */
+/** The name Node gives the builtin module function `node` reads, through
+ * const aliases (`const get = process.cwd`), when the module table names its
+ * value differently from its member (BuiltinModuleFn.valueName); else null. */
+export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): string | null {
+  let n: ts.Node = node;
+  const seen = new Set<ts.Symbol>();
+  for (;;) {
+    while (ts.isParenthesizedExpression(n)) n = n.expression;
+    if (!ts.isIdentifier(n)) break;
+    const imported = lowerer.builtinImportOf(n);
+    if (imported)
+      return builtinModuleFnOf(lowerer, imported.module, imported.member)?.valueName ?? null;
+    const symbol = lowerer.resolveValueSymbol(n);
+    const declaration = symbol?.valueDeclaration;
+    if (!symbol || seen.has(symbol) || !declaration) return null;
+    seen.add(symbol);
+    // A member destructured from a module or the process global
+    // (`const { cwd } = process`).
+    if (ts.isBindingElement(declaration)) {
+      const pattern = declaration.parent;
+      const holder = pattern?.parent;
+      const key = declaration.propertyName ?? declaration.name;
+      if (
+        declaration.dotDotDotToken ||
+        !pattern ||
+        !ts.isObjectBindingPattern(pattern) ||
+        !holder ||
+        !ts.isVariableDeclaration(holder) ||
+        !holder.initializer ||
+        (ts.getCombinedNodeFlags(holder) & ts.NodeFlags.Const) === 0 ||
+        !ts.isIdentifier(key)
+      )
+        return null;
+      return builtinMemberValueName(lowerer, holder.initializer, key.text);
+    }
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !declaration.initializer ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+    )
+      return null;
+    n = declaration.initializer;
+  }
+  if (!ts.isPropertyAccessExpression(n)) return null;
+  return builtinMemberValueName(lowerer, n.expression, n.name.text);
+}
+
+/** BuiltinModuleFn.valueName of `member` read from `receiver`, the process
+ * global or a builtin module's namespace; null for anything else. */
+function builtinMemberValueName(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  member: string,
+): string | null {
+  const module = lowerer.isStdlibGlobal(receiver, "process")
+    ? "process"
+    : lowerer.builtinNamespaceModuleOf(receiver);
+  if (module === null) return null;
+  return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
+}
+
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -2133,14 +2195,18 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
-    const p = n.parent;
-    if (p && ts.isVariableDeclaration(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    // An anonymous function takes the name of the binding or property it
+    // initializes, through parentheses (`const f = (function () {})`).
+    let outer: ts.Node = n;
+    while (outer.parent && ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+    const p = outer.parent;
+    if (p && ts.isVariableDeclaration(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isBindingElement(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    if (p && ts.isBindingElement(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isPropertyAssignment(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
   }
@@ -3380,6 +3446,16 @@ export class Lowerer {
    * checks resolve through this map (stdlibGlobalNameOf), declarations
    * emit nothing. */
   readonly stdlibGlobalAliases = new Map<ts.Symbol, string>();
+  /** The TypeScript declarations registered in stdlibGlobalAliases: the
+   * global each one names and its own name node. Their declarations emit
+   * nothing, so a read that needs the VALUE reports at the declaration
+   * (stdlibGlobalAliasDecl, rejectUnresolvedSymbol) instead of compiling
+   * it away. An unread snapshot stays elided: reading a global has no
+   * side effects. */
+  readonly stdlibGlobalAliasDecls = new Map<ts.Symbol, { alias: string; name: ts.Identifier }>();
+  /** Snapshots whose declaration-side refusal already reported (one
+   * declaration, one report). */
+  private readonly stdlibSnapshotReported = new Set<ts.Symbol>();
   /** The stdlibGlobalAliases bound through a cast of the global object
    * (`(globalThis as { Buffer?: B }).Buffer`). Their static type is the
    * cast's, so their value reads are refused (identifiers.ts). */
@@ -3782,6 +3858,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** global-values.ts's answer per JavaScript source: the builtin globals
+   * its sloppy-mode functions read through their `this`. */
+  readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer: the names the program's global lookup
+   * answers; undefined until asked. */
+  globalLookupNames: readonly string[] | undefined = undefined;
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
@@ -4235,6 +4317,10 @@ export class Lowerer {
       checkedTable("methodLambdasInProgress", () => this.methodLambdasInProgress.size),
       checkedTable("classMethodValueSelections", () => this.classMethodValueSelections.size),
       checkedTable("stdlibGlobalAliases", () => this.stdlibGlobalAliases.size),
+      // The snapshots' own declarations and their one-report memory: both
+      // grow with stdlibGlobalAliases, one entry per registered declaration.
+      checkedTable("stdlibGlobalAliasDecls", () => this.stdlibGlobalAliasDecls.size),
+      checkedTable("stdlibSnapshotReported", () => this.stdlibSnapshotReported.size),
       checkedTable("cjsAccessorFns", () => this.cjsAccessorFns.size),
       checkedTable("cjsAccessorSnapshots", () => this.cjsAccessorSnapshots.size),
       checkedTable("cjsSnapshotReady", () => this.cjsSnapshotReady.size),
@@ -4413,6 +4499,8 @@ export class Lowerer {
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "sloppyThisGlobalReads",
+    "globalLookupNames",
     "namesWebStreamClass",
     "timeValueDateDecisions",
     "timeValueDateWrites",
@@ -5134,6 +5222,13 @@ export class Lowerer {
   classImplementedProtocol(type: ts.Type): boolean {
     this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
     return this.classProtocols.usesCheckedIdentity(type);
+  }
+
+  /** A record view a Map or Set answers: it keeps protocol identity but
+   * calls the collection's own methods, never a stored member. */
+  classCollectionView(type: ts.Type): boolean {
+    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
+    return this.classProtocols.collectionView(type);
   }
 
   /** Declared class fields may store a DYN value only when its static type
@@ -11376,6 +11471,24 @@ export class Lowerer {
     throw new PoisonError();
   }
 
+  /** The declaration-side refusal of a stdlib-global snapshot read as a
+   * VALUE (stdlibGlobalAliasDecl): report once, at the declaration's name,
+   * naming the type the program asked the compiler to hold when it has a
+   * short spelling. */
+  reportStdlibSnapshot(symbol: ts.Symbol): void {
+    const decl = this.stdlibGlobalAliasDecls.get(symbol);
+    if (decl === undefined || this.stdlibSnapshotReported.has(symbol)) return;
+    this.stdlibSnapshotReported.add(symbol);
+    const raw = panicSafe(
+      () => this.checker.typeToString(this.checker.getTypeOfSymbol(symbol)),
+      "",
+    );
+    const typeText = raw !== "" && raw.length <= 48 ? raw : undefined;
+    this.pushDiag(
+      stdlibSnapshotValueUseDiag(decl.name.text, decl.alias, typeText, locOf(decl.name)),
+    );
+  }
+
   stdlibMemberFence(access: ts.PropertyAccessExpression): void {
     return stdlibMemberFence(this, access);
   }
@@ -12356,20 +12469,13 @@ export class Lowerer {
           liveReference(expr.type) ||
           (expr.type.kind === "union" &&
             (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
-        // A builtin function's adapter boxes under the builtin's name, the
-        // name Node's function carries (`[Function: randomUUID]`).
-        const builtinName =
-          expr.kind === "closure" ? this.builtinCallableValueNames.get(expr.fnName) : undefined;
-        const builtinLength =
-          expr.kind === "closure" ? this.builtinCallableValueLengths.get(expr.fnName) : undefined;
         return {
           kind: "dynFrom",
           value: this.checkedBuiltinValue(expr),
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
-          ...(builtinName !== undefined ? { fnName: builtinName } : {}),
-          ...(builtinLength !== undefined ? { fnLength: builtinLength } : {}),
+          ...this.builtinFunctionIdentity(expr),
         };
       }
       return expr;
@@ -12517,7 +12623,13 @@ export class Lowerer {
       ) {
         return {
           kind: "dynCheck",
-          value: { kind: "dynFrom", value: expr, type: DYN, loc: expr.loc },
+          value: {
+            kind: "dynFrom",
+            value: expr,
+            type: DYN,
+            loc: expr.loc,
+            ...this.builtinFunctionIdentity(expr),
+          },
           type: expected,
           loc: expr.loc,
         };
@@ -15569,6 +15681,18 @@ export class Lowerer {
       this.pushDiag(blockedBindingUseDiag(name, locOf(node)));
       throw new PoisonError();
     }
+    // A stdlib-global snapshot read as a VALUE (`return proc` for
+    // `const proc = globalThis.process`): the declaration emitted no
+    // storage — alias plumbing only serves member and call reads — and the
+    // global's own value has no lowering. The cause is the declaration, so
+    // report there (once) and cascade here, instead of the generic
+    // binding-form text that names neither.
+    if (symbol !== null && this.stdlibGlobalAliasDecls.has(symbol)) {
+      this.reportStdlibSnapshot(symbol);
+      this.blockedBindings.add(symbol);
+      this.pushDiag(blockedBindingUseDiag(name, locOf(node)));
+      throw new PoisonError();
+    }
     // A binding whose TYPE keeps a generic call signature and whose
     // declaration carries no initializer (`declare const o4: undefined |
     // (<T>(f: (a: T) => T) => T)` — the optional-chained ambient shape):
@@ -16789,10 +16913,7 @@ export class Lowerer {
       (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
       (bi.member === "posix" || bi.member === "win32")
     ) {
-      // The family's namespace; an untyped use converts it to the module
-      // object (pathModuleValue, through coerceToExpected).
-      const moduleId = `builtin:path/${bi.member}`;
-      return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
+      return pathModuleValue(this, `path/${bi.member}`, loc);
     }
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
@@ -16956,7 +17077,10 @@ export class Lowerer {
     if (!fnName) {
       fnName = keyedHelperName(this, `%builtin.value.${fn.valueFn ?? fn.fn}`, key);
       this.builtinCallableValueFns.set(key, fnName);
-      this.builtinCallableValueNames.set(fnName, display.slice(display.lastIndexOf(".") + 1));
+      this.builtinCallableValueNames.set(
+        fnName,
+        fn.valueName ?? display.slice(display.lastIndexOf(".") + 1),
+      );
       if (fn.valueLength !== undefined)
         this.builtinCallableValueLengths.set(fnName, fn.valueLength);
       const params = funcType.params.map((type, index) => ({
@@ -17061,6 +17185,19 @@ export class Lowerer {
     return checked
       ? checkedNativeCallableValue(this, checked.fn, checked.display, checked.loc)
       : expr;
+  }
+
+  /** The name and length a builtin function's adapter boxes under: the ones
+   * Node's function carries (`[Function: randomUUID]`). Empty for any other
+   * value. */
+  builtinFunctionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
+    if (expr.kind !== "closure") return {};
+    const name = this.builtinCallableValueNames.get(expr.fnName);
+    const length = this.builtinCallableValueLengths.get(expr.fnName);
+    return {
+      ...(name !== undefined ? { fnName: name } : {}),
+      ...(length !== undefined ? { fnLength: length } : {}),
+    };
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

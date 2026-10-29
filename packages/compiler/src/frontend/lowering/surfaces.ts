@@ -832,6 +832,9 @@ export interface BuiltinModuleFn {
    * format's untyped pathObject). `args` are constants passed after the
    * arguments (the win32 flag of an entry both path families share). */
   checked?: { fn: IrLibFn; args: readonly boolean[]; result?: IrType; only?: true };
+  /** The function value's `name` when it is not the member's
+   * (`process.cwd` is Node's `wrappedCwd`). */
+  valueName?: string;
 }
 
 /** `name` is the argument name Node's validator reports
@@ -1943,6 +1946,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
       },
+      // util.debug is util.debuglog, under its name.
       debug: {
         fn: "util.debuglog",
         params: [DYN, DYN],
@@ -1951,6 +1955,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "required", type: DYN },
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
+        valueName: "debuglog",
       },
     },
     // The util/types spoke supplies the probe name to the shared brand check.
@@ -2003,10 +2008,29 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
     },
     tty: {
-      isatty: { fn: "process.isTTY", params: [F64], result: BOOL },
+      isatty: {
+        fn: "process.isTTY",
+        params: [F64],
+        result: BOOL,
+        // As a value (loggers store `tty.isatty`), the adapter takes any
+        // argument: a value that is not an integral fd answers false, and is
+        // never coerced.
+        valueFn: "process.isTTYValue",
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
     },
     process: {
       loadEnvFile: { fn: "process.loadEnvFile", params: [DYN], result: VOID },
+      // Every spelling of process.cwd as a value is this one function, which
+      // reads the directory when it is called.
+      cwd: {
+        fn: "process.cwd",
+        params: [],
+        result: STRING,
+        valueParams: [],
+        valueName: "wrappedCwd",
+      },
     },
     // node:string_decoder's surface is the StringDecoder CLASS — new/write/
     // end are special-cased (lowerNew + lowerStringDecoderMethodCall); no
@@ -2337,6 +2361,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     getRandomValues: ["crypto.getRandomValuesDyn"],
     randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
     randomUUID: ["crypto.randomUUIDOpts"],
+  },
+  tty: {
+    isatty: ["process.isTTYValue"],
   },
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.
@@ -2775,12 +2802,6 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
-      id: "node-builtin.process.cwd",
-      kind: "node-builtin",
-      name: "process.cwd",
-      fns: ["process.cwd"],
-    },
-    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -2914,7 +2935,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.isTTY",
       kind: "node-builtin",
       name: "process.isTTY",
-      fns: ["process.isTTY"],
+      fns: ["process.isTTY", "process.isTTYValue"],
       note: "the isTTY read on process.stdin/stdout/stderr — one surface across the three streams",
     },
     {
@@ -3771,6 +3792,15 @@ export function stdlibGlobalAliasDecl(
   lowerer.stdlibGlobalAliases.set(symbol, name);
   if (init !== undefined && castGlobalAliasSource(lowerer, init))
     lowerer.castGlobalAliases.add(symbol);
+  // The snapshot exists for reads, and its declaration emits nothing: a
+  // read that needs its VALUE (an argument, a return) cannot resolve, so
+  // register the declaration to report the cause there rather than at the
+  // use (rejectUnresolvedSymbol). TypeScript sources only: JavaScript
+  // bindings keep their checked-dynamic value paths. A snapshot no read
+  // resolves stays elided — reading a global has no side effects, so
+  // eliding an unread one is observationally identical to Node.
+  if (!isJsSourceFile(ts.getSourceFileOfNode(nameNode)))
+    lowerer.stdlibGlobalAliasDecls.set(symbol, { alias: name, name: nameNode });
   return true;
 }
 

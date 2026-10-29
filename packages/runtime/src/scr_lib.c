@@ -5126,6 +5126,12 @@ bool scr_process_is_tty(double fd) {
   return isatty((int)fd) != 0;
 }
 
+/* tty.isatty as a function value (borrowed argument): a value that is not a
+ * number answers false and is never coerced, as Node's integer test does. */
+bool scr_process_is_tty_value(const ScrDyn *fd) {
+  return fd != NULL && fd->kind == SCR_DYN_NUM && scr_process_is_tty(fd->v.num);
+}
+
 /* Terminal geometry for process.stdout/stderr.columns/rows: ioctl(TIOCGWINSZ) on
  * the stream's fd, exactly Node's tty.WriteStream source of truth. A
  * non-TTY stream, or a terminal that refuses the ioctl, answers -1 and
@@ -5238,33 +5244,10 @@ void scr_process_stdin_destroy(void) {
  * rejects (see the fsp section). scr_stats_dyn builds Node's Stats and
  * BigIntStats objects from the same snapshot. */
 
-/* The integers in the order Node's binding reports them. */
-enum {
-  SCR_STATS_DEV,
-  SCR_STATS_MODE,
-  SCR_STATS_NLINK,
-  SCR_STATS_UID,
-  SCR_STATS_GID,
-  SCR_STATS_RDEV,
-  SCR_STATS_BLKSIZE,
-  SCR_STATS_INO,
-  SCR_STATS_SIZE,
-  SCR_STATS_BLOCKS,
-  SCR_STATS_FIELDS
-};
-
-/* The timestamps, each kept as seconds + nanoseconds. */
-enum { SCR_STATS_ATIME, SCR_STATS_MTIME, SCR_STATS_CTIME, SCR_STATS_BIRTHTIME };
-
-struct ScrStats {
-  size_t rc;
-  bool is_file;
-  bool is_dir;
-  bool is_symlink; /* lstat only — a followed stat never sees one */
-  uint64_t fields[SCR_STATS_FIELDS]; /* blocks counts 512-byte units */
-  int64_t sec[4];
-  int64_t nsec[4];
-};
+/* The layout (the field enum, the timestamp enum and the struct) lives in
+ * scr_stats_private.h so scr_stats_bigint.c can read the same snapshot
+ * without this unit carrying its code. */
+#include "scr_stats_private.h"
 
 ScrStats *scr_stats_retain(ScrStats *s) {
   if (s->rc != SIZE_MAX) s->rc++;

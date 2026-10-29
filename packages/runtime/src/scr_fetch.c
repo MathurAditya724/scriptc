@@ -270,9 +270,11 @@ struct SfTransfer {
   bool response_ended;
   bool response_sent;
   bool done;
-  struct SfTransfer *next;
+  bool live; /* listed in sf_live */
+  struct SfTransfer *prev, *next;
 };
 
+/* the transfers in flight: +1 each, most recent first */
 static SfTransfer *sf_live;
 #endif
 /* Weak registries: owners unlink themselves on destruction. They let the
@@ -4494,12 +4496,24 @@ static void sf_settle(SfTransfer *t) {
     t->response_socket = NULL;
     t->response_paused = false;
   }
-  for (SfTransfer **link = &sf_live; *link; link = &(*link)->next) {
-    if (*link == t) {
-      *link = t->next;
-      sf_release(t); /* registry reference */
-      return;
+  if (t->live) {
+#ifdef SCR_RC_AUDIT
+    /* the transfer is reachable from the head and its neighbors point
+     * back at it */
+    const SfTransfer *it = sf_live;
+    while (it != NULL && it != t) it = it->next;
+    if (it == NULL || (t->prev ? t->prev->next != t : sf_live != t) ||
+        (t->next != NULL && t->next->prev != t)) {
+      fprintf(stderr, "scr_fetch: the live transfer list's links disagree\n");
+      abort();
     }
+#endif
+    t->live = false;
+    if (t->prev) t->prev->next = t->next;
+    else sf_live = t->next;
+    if (t->next) t->next->prev = t->prev;
+    t->prev = t->next = NULL;
+    sf_release(t); /* registry reference */
   }
 }
 
@@ -7367,7 +7381,10 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     t->signal_watch =
         sf_signal_watch(signal, t, &sf_transfer_abort_watch);
   }
+  t->live = true;
+  t->prev = NULL;
   t->next = sf_live;
+  if (sf_live) sf_live->prev = t;
   sf_live = t;
   sf_start_hop(t);
   return promise;

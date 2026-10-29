@@ -20,7 +20,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, isNodeEsmFile } from "../program.js";
+import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import {
   genResultRecord,
   restTupleParamTypes,
@@ -36,7 +36,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { restPackingAdapterFits } from "./coercions/function-adapters.js";
+import { funcSlotAdaptable, restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -668,21 +668,6 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
-  // A nested function declaration whose only non-required parameter is a
-  // typed rest: its value carries the typed-rest ABI its own type spells,
-  // and every use converts it at its slot (same signature, or the rest
-  // packing adapter for fixed parameters).
-  if (
-    contextual === null &&
-    ts.isFunctionDeclaration(blame) &&
-    blame.name !== undefined &&
-    funcType.kind === "func" &&
-    funcType.restAbi === "typed" &&
-    shapes.every((s) => s.mode === "required" || s.mode === "rest")
-  ) {
-    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
-    if (own && typeEquals(own, funcType)) return;
-  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -722,8 +707,33 @@ export function requireExactArityValue(
     const member = literalType
       ? lowerer.checker.getPropertyOfType(literalType, blame.name.text)
       : undefined;
-    const slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    let slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    // A literal contextualized by an INDEX SIGNATURE (`Record<string,
+    // Handler>`) names no member for the method: its slot is the index
+    // signature's value type.
+    if (!slot && literalType) {
+      const index = lowerer.checker.getIndexInfosOfType(literalType)[0];
+      if (index) slot = lowerer.memberSlotTypeOf(index.type);
+    }
     if (slot && typeEquals(slot, funcType)) return;
+    // The slot may pass parameters the method's completed ABI cannot take
+    // verbatim (a required narrower interface parameter where the method
+    // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
+    // coercion adapts the pair like any other function value.
+    if (
+      slot?.kind === "func" &&
+      funcType.kind === "func" &&
+      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+    )
+      return;
+    // An UNCONTEXTUALIZED literal's own inferred type is what every later
+    // read of the member spells, and it is built from the method's own
+    // completed signature (mapType's completed-signature contract), so the
+    // method's own completed type is its slot.
+    if (!slot) {
+      const own = lowerer.mapTypeOf(lowerer.typeOf(blame));
+      if (own && typeEquals(own, funcType)) return;
+    }
   }
   // A union-typed slot (`runner || defaultRunner` under a
   // `CommandRunner | undefined` context): the value can only inhabit
@@ -767,6 +777,18 @@ export function requireExactArityValue(
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
     restPackingAdapterFits(lowerer, funcType, mappedFn)
+  ) {
+    return;
+  }
+  // A signature the slot's coercion adapts without a trap-only path: an
+  // extra trailing OPTIONAL parameter the slot never passes (forwarded as
+  // undefined, JavaScript's surplus-argument rule) or a parameter pair the
+  // adapter converts (a required narrower interface parameter against the
+  // value's `Ctx | undefined` completed slot).
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
   ) {
     return;
   }

@@ -443,24 +443,37 @@ export function pathModuleValue(lowerer: Lowerer, module: string, loc: SrcLoc): 
   return moduleValue(lowerer, module, loc);
 }
 
-/** A path family's members as a fresh object, for spreading (`{ ...path }`
- * copies the enumerable members). */
-export function pathModuleObject(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
-  const fields: { key: IrExpr; value: IrExpr }[] = [];
-  const add = (member: string, value: IrExpr): void => {
-    fields.push({ key: strLit(member, loc), value: box(value) });
+/** What a spread of a node:path namespace copies. A module object
+ * (`require("path")`, a default import, `posix`, `win32`) is spread as
+ * itself, so the copy holds its members in Node's order. An ES module
+ * namespace (`import * as path`) has its keys sorted and also `default`,
+ * the module object; each member is read through the module value, so the
+ * copy holds the same functions (`{ ...path }.join === path.join`). */
+export function pathModuleSpreadSource(
+  lowerer: Lowerer,
+  module: string,
+  namespace: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  if (!namespace) return pathModuleValue(lowerer, module, loc);
+  const local = lowerer.declareHiddenLocal("%pathModule", DYN);
+  const value = varRef(local.id, DYN, loc);
+  const fields = [...PATH_MODULE_KEYS, "default"].sort().map((key) => ({
+    key: strLit(key, loc),
+    value:
+      key === "default"
+        ? value
+        : ({ kind: "dynKeyGet", value, key: strLit(key, loc), type: DYN, loc } as IrExpr),
+  }));
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local.id, init: pathModuleValue(lowerer, module, loc), loc },
+    ],
+    result: { kind: "dynObjLit", fields, type: DYN, loc },
+    type: DYN,
+    loc,
   };
-  for (const member of Object.keys(builtinModuleFns()[module] ?? {})) {
-    const value = lowerer.lowerBuiltinCallableValue({ module, member }, loc);
-    if (value) add(member, lowerer.checkedBuiltinValue(value));
-  }
-  for (const member of Object.keys(BUILTIN_MODULE_CONSTS[module] ?? {})) {
-    const value = builtinModuleConstOf(lowerer, module, member);
-    if (value !== undefined) add(member, builtinConstLit(value, loc));
-  }
-  add("posix", moduleValue(lowerer, "path/posix", loc));
-  add("win32", moduleValue(lowerer, "path/win32", loc));
-  return { kind: "dynObjLit", fields, type: DYN, loc };
 }
 
 export function utilTypesModuleValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {

@@ -171,6 +171,12 @@ export type IrType =
    * never part of a cycle, no trace. Same container rules as url: union
    * arms fine, arrays/maps/JSON fenced. */
   | { kind: "stats" }
+  /** statSync/lstatSync/fstatSync with `{ bigint: true }`: the SAME snapshot
+   * handle as `stats` (scr_stats_* retain/release), with Node's BigIntStats
+   * member table — the integer and `*Ns` members read as `bigint`, the `*Ms`
+   * members as `number`, the four time members as `Date`. Distinct kind so
+   * the member reads and the type identity differ from Stats. */
+  | { kind: "bigintStats" }
   /** A node:fs/promises FileHandle: heap, refcounted, MUTABLE — aliases
    * share one descriptor slot, so close() is idempotent and every alias
    * observes fd === -1 after closure. The final release closes a still-
@@ -401,6 +407,7 @@ export type IrType =
 
 const POINTER_HANDLE_KINDS = [
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -485,6 +492,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   searchParams: "scr_sp",
   symbol: "scr_sym",
   stats: "scr_stats",
+  bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
   spawnRes: "scr_spawn_res",
@@ -552,6 +560,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "url",
   "searchParams",
   "stats",
+  "bigintStats",
   "fileHandle",
   "dir",
   "spawnRes",
@@ -596,6 +605,7 @@ export const URL_T: IrType = { kind: "url" };
 export const SEARCH_PARAMS_T: IrType = { kind: "searchParams" };
 export const SYMBOL_T: IrType = { kind: "symbol" };
 export const STATS_T: IrType = { kind: "stats" };
+export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
@@ -669,6 +679,7 @@ export function isSupportedArrayElem(t: IrType): boolean {
     // fs.Stats snapshots (`await Promise.all(paths.map(stat))`): immutable
     // refcounted handles with their own retain/release adapters.
     case "stats":
+    case "bigintStats":
     case "symbol":
     case "classval":
     case "moduleNs":
@@ -4572,6 +4583,17 @@ function canBoxDynCompositeAt(
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);
+    case "promise":
+      // Promises box by REFERENCE wherever the walker meets them, nested in
+      // records, arrays and unions exactly like a bare promise: promise<dyn>
+      // carries its ScrPromise, a void payload is absent, and any other inner
+      // converts through the adapter promise toDynHelper emits
+      // (scr_dyn_new_promise_adapting).
+      return (
+        t.inner.kind === "dyn" ||
+        t.inner.kind === "void" ||
+        canConvertToDyn(t.inner, getRecord, getUnion, visiting)
+      );
     case "set":
       return (
         canConvertToDyn(t.elem, getRecord, getUnion, visiting) &&
@@ -4651,6 +4673,13 @@ export function canDynCheckTo(
   return result;
 }
 
+/** The in-progress key of a checked composite. Marking it for the duration of
+ * the frame answers a recursion back-edge coinductively, and the wrapper
+ * keeps it as the success memo once the frame returns true. */
+function checkedVisitKey(t: IrType): string {
+  return `checked:${typeKey(t)}`;
+}
+
 /** Reuse completed subgraphs within one conversion query. A failed branch
  * invalidates successes that may depend on a coinductive back-edge to it;
  * active recursion keys remain until their owning calls unwind. */
@@ -4690,8 +4719,8 @@ function canDynCheckToAt(
   if (isDynTypedRefType(t)) return true;
   if (t.kind === "array") {
     if (t.elem.kind === "procStream") return false;
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     visiting.add(key);
     const result = canDynCheckTo(t.elem, getRecord, getUnion, visiting);
     visiting.delete(key);
@@ -4700,8 +4729,14 @@ function canDynCheckToAt(
   // A codec handle unboxes to the record it holds.
   if (textCodecRecordClass(t, getRecord) !== null) return true;
   if (t.kind === "record") {
-    const key = typeKey(t);
-    if (visiting.has(key)) return false;
+    // Recursive shapes answer COINDUCTIVELY, like the composite dynFrom
+    // walk: assume the back-edge checks and verify every reachable field at
+    // its first visit. A recursion through a checked slot is ordinary in a
+    // callback-options graph — a method's options object takes a context
+    // whose methods take the same options — and refusing the back-edge
+    // would fence types whose every leaf is checkable.
+    const key = checkedVisitKey(t);
+    if (visiting.has(key)) return true;
     const shape = getRecord(t.shapeId);
     if (!shape || shapeHasAccessorSlots(shape)) return false;
     visiting.add(key);

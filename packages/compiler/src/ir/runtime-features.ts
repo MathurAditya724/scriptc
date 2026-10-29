@@ -850,12 +850,18 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
-  /** scr_wasm.c converts i64 values through BigInt. */
+  /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
+   * produce bigint values. */
   bigint: rule({
     fns: ["process.hrtimeValue"],
-    prefixes: ["bigint.", "wasm."],
+    prefixes: ["bigint.", "wasm.", "bigstats."],
     types: ["bigint"],
   }),
+  /** BigIntStats member reads (`statSync(p, { bigint: true })` members) link
+   * scr_stats_bigint.c. The bigint feature is broader than this unit: every
+   * bigint value and wasm conversion turns it on, so gating the unit on it
+   * would link the getters into programs that never name a stat member. */
+  bigstats: rule({ prefixes: ["bigstats."] }),
   childProcess: rule({
     fns: [...CHILD_PROCESS_LIB_FNS],
     prefixes: CHILD_PROCESS_LIB_PREFIXES,
@@ -1273,6 +1279,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     assert: false,
     asyncContext: false,
     bigint: false,
+    bigstats: false,
     childProcess: false,
     cipher: false,
     copying: false,

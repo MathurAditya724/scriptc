@@ -386,6 +386,7 @@ double scr_atomics_notify_dyn(const ScrDyn *, double, double);
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
  * documented no-op. */
 bool scr_process_is_tty(double fd);
+bool scr_process_is_tty_value(const ScrDyn *fd);
 void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 
@@ -477,6 +478,32 @@ double scr_stats_atime(ScrStats *s);
 double scr_stats_mtime(ScrStats *s);
 double scr_stats_ctime(ScrStats *s);
 double scr_stats_birthtime(ScrStats *s);
+/* BigIntStats members (scr_stats_bigint.c): every number member of Stats
+ * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
+ * time values from the truncated `*Ms` member. */
+typedef struct ScrBigInt ScrBigInt;
+ScrBigInt *scr_stats_big_dev(ScrStats *s);
+ScrBigInt *scr_stats_big_mode(ScrStats *s);
+ScrBigInt *scr_stats_big_nlink(ScrStats *s);
+ScrBigInt *scr_stats_big_uid(ScrStats *s);
+ScrBigInt *scr_stats_big_gid(ScrStats *s);
+ScrBigInt *scr_stats_big_rdev(ScrStats *s);
+ScrBigInt *scr_stats_big_blksize(ScrStats *s);
+ScrBigInt *scr_stats_big_ino(ScrStats *s);
+ScrBigInt *scr_stats_big_size(ScrStats *s);
+ScrBigInt *scr_stats_big_blocks(ScrStats *s);
+ScrBigInt *scr_stats_big_atime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_mtime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_ctime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_birthtime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_atime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_mtime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_ctime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s);
+double scr_stats_big_atime(ScrStats *s);
+double scr_stats_big_mtime(ScrStats *s);
+double scr_stats_big_ctime(ScrStats *s);
+double scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
 /* Node's Stats (or BigIntStats) object for the snapshot: own fields in the

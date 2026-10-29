@@ -1170,6 +1170,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "dir":
     case "watcher":
     case "stats":
+    case "bigstats":
     case "zlib":
     case "atomics":
       return host.emitFilesystemLibCall(e);

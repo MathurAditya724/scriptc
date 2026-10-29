@@ -134,6 +134,57 @@ export function cleanFuncAdaptable(
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
+/** Whether the slot's argument type `actual` converts into the function's
+ * parameter type `expected` without a trap-only path: the pieces
+ * funcCoerceAdapter's parameter loop converts (coercibleValue, the record
+ * width conversion — which also selects a width-liftable arm of a union
+ * destination, the required-narrower-argument shape — the partial
+ * checked-dynamic extraction, and the union arm preservation). */
+function cleanParamPair(lowerer: Lowerer, actual: IrType, expected: IrType): boolean {
+  if (lowerer.coercibleValue(actual, expected)) return true;
+  if (lowerer.widthLiftPlan(actual, expected) !== null) return true;
+  if (actual.kind === "union" && expected.kind === "dyn")
+    return (
+      lowerer.unions.get(actual.unionId)?.arms.some((arm) => lowerer.dynConvertible(arm)) ?? false
+    );
+  if (actual.kind === "union" && expected.kind === "union") {
+    const target = lowerer.unions.get(expected.unionId);
+    return (
+      target !== undefined && target.arms.every((arm) => lowerer.armTag(actual.unionId, arm) >= 0)
+    );
+  }
+  return false;
+}
+
+/** Whether a function VALUE of `src` may inhabit a `dst` slot: the slot's
+ * coercion (funcCoerceAdapter) forwards its arguments, converts them, and
+ * converts the result — with no trap-only (stranded) path. This is
+ * cleanFuncAdaptable extended to the source-with-MORE-parameters shape: a
+ * value carrying extra trailing parameters whose completed ABI holds
+ * undefined (a `(id, params, signal, onUpdate, ctx?: Ctx)` lambda in a
+ * four-parameter slot). A call through the slot never passes them, so the
+ * coercion forwards undefined — JavaScript's surplus-argument rule. */
+export function funcSlotAdaptable(
+  lowerer: Lowerer,
+  src: IrType & { kind: "func" },
+  dst: IrType & { kind: "func" },
+  loc: SrcLoc,
+): boolean {
+  if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (src.rest === true || dst.rest === true) return false;
+  for (let i = dst.params.length; i < src.params.length; i++) {
+    const param = src.params[i]!;
+    if (omittedArgFor(lowerer, param, loc) === null && !typeEquals(param, UNDEFINED_T))
+      return false;
+  }
+  for (let i = 0; i < src.params.length && i < dst.params.length; i++) {
+    if (!cleanParamPair(lowerer, dst.params[i]!, src.params[i]!)) return false;
+  }
+  if (dst.ret.kind === "void") return true;
+  if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
+  return src.ret.kind === "void" && dst.ret.kind === "dyn";
+}
+
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
  * with fixed parameters (`(m: T) => void`): the slot's parameters convert
  * to the function's fixed parameters, then to the rest element type. */
@@ -348,6 +399,7 @@ export function funcCoerceAdapter(
         continue;
       }
     }
+    if (cleanParamPair(lowerer, actual, expected)) continue;
     strandParams = true;
   }
   let voidRet: "dyn" | "strand" | null = null;

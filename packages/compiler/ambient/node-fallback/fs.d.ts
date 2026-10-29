@@ -387,9 +387,43 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
+  /* Node's BigIntStats: the same snapshot under the bigint member table.
+   * Every number member of Stats — including the *Ms millisecond members —
+   * answers a bigint, and the *Ns nanosecond members sit beside them; the
+   * four time members stay Dates. */
+  export interface BigIntStats {
+    isFile(): boolean;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    readonly dev: bigint;
+    readonly mode: bigint;
+    readonly nlink: bigint;
+    readonly uid: bigint;
+    readonly gid: bigint;
+    readonly rdev: bigint;
+    readonly blksize: bigint;
+    readonly ino: bigint;
+    readonly size: bigint;
+    readonly blocks: bigint;
+    readonly atimeMs: bigint;
+    readonly mtimeMs: bigint;
+    readonly ctimeMs: bigint;
+    readonly birthtimeMs: bigint;
+    readonly atimeNs: bigint;
+    readonly mtimeNs: bigint;
+    readonly ctimeNs: bigint;
+    readonly birthtimeNs: bigint;
+    readonly atime: Date;
+    readonly mtime: Date;
+    readonly ctime: Date;
+    readonly birthtime: Date;
+  }
   /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
-   * ENOTDIR) instead of throwing. BigIntStats (bigint: true) has no
-   * lowering. */
+   * ENOTDIR) instead of throwing. bigint: true answers BigIntStats. */
   export interface StatSyncOptions {
     bigint?: boolean;
     throwIfNoEntry?: boolean;
@@ -401,10 +435,18 @@ declare module "node:fs" {
   ): Stats | undefined;
   export function statSync(
     path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry: false },
+  ): BigIntStats | undefined;
+  export function statSync(
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
-  /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function statSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function statSync(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+  ): BigIntStats;
+  /* A runtime-valued `bigint` is refused at lowering, so the catch-all keeps
+   * the Stats answer the other reachable forms give. */
   export function statSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   export function lstatSync(path: string | URL, options?: undefined): Stats;
   export function lstatSync(
@@ -413,10 +455,16 @@ declare module "node:fs" {
   ): Stats | undefined;
   export function lstatSync(
     path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry: false },
+  ): BigIntStats | undefined;
+  export function lstatSync(
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
-  /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function lstatSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function lstatSync(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+  ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. */
@@ -498,8 +546,9 @@ declare module "node:fs" {
     position?: number | null,
     encoding?: "utf8" | "utf-8",
   ): number;
-  /* statSync over an open fd — the same Stats snapshot. */
-  export function fstatSync(fd: number): Stats;
+  /* statSync over an open fd — the same snapshot. */
+  export function fstatSync(fd: number, options?: StatSyncOptions & { bigint?: false }): Stats;
+  export function fstatSync(fd: number, options: StatSyncOptions & { bigint: true }): BigIntStats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
    * shapes for missing paths. */
   export function realpathSync(path: string | URL): string;
