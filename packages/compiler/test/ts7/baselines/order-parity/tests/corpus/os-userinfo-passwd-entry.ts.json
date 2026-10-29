@@ -2,15 +2,5 @@
  "order": [
   "<repo>/tests/corpus/os-userinfo-passwd-entry.ts"
  ],
- "diags": [
-  {
-   "code": "SC0001",
-   "message": "Namespace 'NodeJS' has no exported member 'ProcessEnv'.",
-   "loc": {
-    "file": "<repo>/tests/corpus/os-userinfo-passwd-entry.ts",
-    "start": 1578,
-    "end": 1588
-   }
-  }
- ]
+ "diags": []
 }
