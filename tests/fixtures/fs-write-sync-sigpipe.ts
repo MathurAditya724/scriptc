@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const mode = process.argv.length > 2 ? process.argv[2] : "sigpipe";
-if (mode === "sigpipe" || mode === "stream-sigpipe") {
+if (mode === "sigpipe" || mode === "stream-sigpipe" || mode === "stream-then-sync-sigpipe") {
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(sleeper, 0, 0, 100);
 }
@@ -17,6 +17,20 @@ if (mode === "stream-sigpipe") {
     console.error("stream caught:", err.name, err.code, err.message);
   });
   out.write("probe\n");
+} else if (mode === "stream-then-sync-sigpipe") {
+  // a pool thread writes first; the calling thread's writeSync after it
+  // keeps its own guard
+  const scratch = path.join(os.tmpdir(), `scr-write-then-sync-${process.pid}`);
+  const file = fs.createWriteStream(scratch);
+  file.end("pool\n", () => {
+    fs.unlinkSync(scratch);
+    try {
+      fs.writeSync(1, "probe\n");
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      console.error("sync caught:", err.name, err.code);
+    }
+  });
 } else if (mode === "stream-efbig") {
   const scratch = path.join(os.tmpdir(), `scr-write-stream-${process.pid}`);
   const out = fs.createWriteStream(scratch);

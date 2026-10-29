@@ -87,6 +87,10 @@ describe.skipIf(process.platform === "win32")(
       expect(streamPipe.outcome).toEqual({ code: 0, signal: null });
       expect(streamPipe.stderr).toBe("stream caught: Error EPIPE EPIPE: broken pipe, write\n");
 
+      const thenSync = await run(result.binaryPath, ["stream-then-sync-sigpipe"], true);
+      expect(thenSync.outcome).toEqual({ code: 0, signal: null });
+      expect(thenSync.stderr).toBe("sync caught: Error EPIPE\n");
+
       const streamLimit = await run(launcher, ["rlimit", result.binaryPath, "stream-efbig"]);
       expect(streamLimit.outcome).toEqual({ code: 0, signal: null });
       expect(streamLimit.stderr).toBe("stream caught: Error EFBIG EFBIG: file too large, write\n");

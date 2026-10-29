@@ -4103,9 +4103,10 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
 #endif
   /* A thread that keeps both signals blocked (the fs pool's threads) writes
    * without changing its mask; a write that fails with EPIPE or EFBIG then
-   * consumes the signal it left pending. The answer is per thread and
-   * computed once. */
-  static SCR_TL signed char thread_blocks = -1;
+   * consumes the signal it left pending. The answer is per OS thread and
+   * computed once: _Thread_local, not SCR_TL, which is empty in builds
+   * without thread instances while the pool threads still exist. */
+  static _Thread_local signed char thread_blocks = -1;
   if (thread_blocks < 0) {
     sigset_t current;
     bool blocks = pthread_sigmask(SIG_BLOCK, NULL, &current) == 0;
