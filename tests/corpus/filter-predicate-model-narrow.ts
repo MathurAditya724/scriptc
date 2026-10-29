@@ -41,4 +41,14 @@ const restored = restore(stored);
 for (const model of restored) console.log(model.id, model.api, model.window, model.compat?.strict, "compat" in model);
 console.log(restored.length, restored.map((model) => model.window).reduce((a, b) => a + b, 0));
 
+// A target that is itself an arm of the union keeps that arm's elements as
+// they are, while another arm with its fields converts.
+type Mixed = Model<"a"> | Model<Api> | Image;
+function pick(stored: Mixed[]): Model<"a">[] {
+  return stored.filter((model): model is Model<"a"> => model.kind === "chat" && model.api === "a");
+}
+const exact: Model<"a"> = { kind: "chat", api: "a", id: "5", window: 3, compat: { strict: false } };
+const picked = pick([exact, ...stored]);
+console.log(picked.map((model) => `${model.id}:${model.window}:${model.compat?.strict}`).join(" "), picked[0] === exact);
+
 export {};

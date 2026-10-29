@@ -154,6 +154,22 @@ function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): 
   return open;
 }
 
+/** `type` when it is the ambient Promise, or its one Promise arm when it is
+ * a union with exactly one; undefined for anything else (`void`, `unknown`,
+ * a PromiseLike). */
+function promiseArm(lowerer: Lowerer, type: ts.Type): ts.Type | undefined {
+  const isPromise = (t: ts.Type): boolean => {
+    const symbol = t.getSymbol();
+    return (
+      symbol !== undefined && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)
+    );
+  };
+  if (isPromise(type)) return type;
+  if (!type.isUnionType()) return undefined;
+  const arms = ts.constituentTypes(type).filter(isPromise);
+  return arms.length === 1 ? arms[0] : undefined;
+}
+
 /** Map a declaration's return contract while retaining JavaScript
  * inference fallbacks. Diagnostics preserve the caller's blame node. */
 export function declaredReturnType(
@@ -188,8 +204,14 @@ export function declaredReturnType(
       slot === undefined
         ? []
         : lowerer.checker.getCallSignatures(lowerer.checker.getTypeOfSymbol(slot));
-    if (signatures.length === 1)
-      retTsType = lowerer.checker.getReturnTypeOfSignature(signatures[0]!);
+    // A slot whose return is not a promise (`() => void`, or a union such
+    // as `Promise<T> | void`) contributes only its promise: an async
+    // method returns one whatever the slot says.
+    const promise =
+      signatures.length === 1
+        ? promiseArm(lowerer, lowerer.checker.getReturnTypeOfSignature(signatures[0]!))
+        : undefined;
+    if (promise !== undefined) retTsType = promise;
   }
   // An inferred null/undefined return in JS can read a mutable checked-value
   // field. Keep the actual value instead of restricting it to the initializer.

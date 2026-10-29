@@ -277,10 +277,10 @@ function unionConversion(
     });
   }
   // Every arm the target names must be one of the union's own arms, or a
-  // record target converts from at least one arm.
-  if (recordArmConversions > 0) {
-    if (kept !== 0) return null;
-  } else if (kept === 0 || kept !== targetArms.length) return null;
+  // record target converts from at least one arm. A record target that is
+  // itself an arm keeps that arm's elements as they are, and the arms with
+  // its fields convert.
+  if (kept === 0 ? recordArmConversions === 0 : kept !== targetArms.length) return null;
   body.push(
     typeError(
       `a kept element is not a '${typeText}' (a type predicate returned true for a value of another type)`,
