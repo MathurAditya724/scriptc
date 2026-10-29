@@ -332,8 +332,9 @@ function matchJam(
  * overlap their dependence chains.
  *
  * For the same reason the jammed loop may run past the iteration where every
- * accumulator is full: it tests that every fourth iteration (`j & 3` is 3)
- * and keeps the inner loop's own bound. The copies' statements alternate,
+ * accumulator is full: when the inner loop starts at an int32 literal, it
+ * tests that every fourth iteration (`j & 3` is 3), and it keeps the inner
+ * loop's own bound. The copies' statements alternate,
  * and each local's copies are added next to each other, so the vectorizer
  * packs one copy per lane. */
 export function jamSaturatingLoops(mod: IrModule): IrModule {
@@ -382,7 +383,8 @@ function emitJam(
   const { inner, pre, post, values, counter } = jam;
   const loc = inner.loc;
   const own = declared([...pre, ...inner.body]);
-  const j = (inner.init as IrStmt & { kind: "varDecl" }).localId;
+  const init = inner.init as IrStmt & { kind: "varDecl" };
+  const j = init.localId;
   own.delete(j);
   // Each local's copies are added next to each other: the vectorizer pairs
   // neighboring values of the loop's header, so one copy per lane.
@@ -449,15 +451,23 @@ function emitJam(
   };
   // `(j & 3) === 3`
   const fourth: IrExpr = { kind: "bin", op: "===", left: counter3, right: three, type: BOOL, loc };
+  // `j` reaches a value whose low bits are 3 within four iterations when it
+  // starts at an int32 literal: it then takes consecutive integer values,
+  // which stay exact for more than 2^52 iterations. From another start (NaN,
+  // an infinity, a value where `j + 1` is `j`), the exit is tested every
+  // iteration.
+  const start = intLit(init.init);
+  const everyFourth = start !== null && start >= -0x80000000 && start <= 0x7fffffff;
   const jammed: IrStmt = {
     ...inner,
     body: [
-      // The copies take turns statement by statement; the exit is tested
-      // every fourth iteration.
+      // The copies take turns statement by statement.
       ...copies[0]!.body.flatMap((_, k) => copies.map((copy) => copy.body[k]!)),
       {
         kind: "if",
-        cond: { kind: "logical", op: "&&", left: fourth, right: allFull!, type: BOOL, loc },
+        cond: everyFourth
+          ? { kind: "logical", op: "&&", left: fourth, right: allFull!, type: BOOL, loc }
+          : allFull!,
         then: [{ kind: "break", loc }],
         else_: null,
         loc,

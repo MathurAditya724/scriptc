@@ -187,6 +187,27 @@ test("jams a constant-count loop whose inner loop exits once its accumulator is 
   expect(posts.every((s) => s.kind === "assign" && s.localId === "res")).toBe(true);
 });
 
+test("tests the exit every iteration unless the inner loop starts at an int32 literal", () => {
+  const exitTest = (innerStart: IrExpr): IrExpr => {
+    const out = jamSaturatingLoops(moduleOf(nest({ innerStart })));
+    const inner = loops(out.functions[0]!.body)[0]!;
+    const last = inner.body[inner.body.length - 1]!;
+    if (last.kind !== "if") throw new Error("expected an exit test");
+    return last.cond;
+  };
+  const everyFourth = (cond: IrExpr): boolean => {
+    if (cond.kind !== "logical" || cond.left.kind !== "bin") return false;
+    const low = cond.left.left;
+    return low.kind === "bin" && low.op === "&";
+  };
+  expect(everyFourth(exitTest(num(-5)))).toBe(true);
+  expect(everyFourth(exitTest(num(0x7fffffff)))).toBe(true);
+  // `j` may be NaN, an infinity or a value `j + 1` leaves unchanged.
+  expect(everyFourth(exitTest(ref("start")))).toBe(false);
+  expect(everyFourth(exitTest(num(2 ** 31)))).toBe(false);
+  expect(everyFourth(exitTest(num(-(2 ** 31) - 1)))).toBe(false);
+});
+
 test("keeps loops whose exits or values do not allow running iterations together", () => {
   const reject = (body: IrStmt[]): void => {
     const mod = moduleOf(body);
