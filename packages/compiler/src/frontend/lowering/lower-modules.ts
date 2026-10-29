@@ -1,6 +1,6 @@
 import { isIslandPromisifyCall, noteIslandSubclass } from "./lower-node-island.js";
 import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
-import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
+import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
@@ -3172,10 +3172,10 @@ export function lowerFileInit(
     // (NI-6); the plan also creates their declarations' TDZ flags.
     if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
       header.push(...sharedModuleRegistrations(lowerer));
-    // A module that reads builtin globals through the global object by
-    // computed names installs the program's lookup before its body runs.
-    const computedGlobalRead = computedGlobalReadOf(lowerer, sf);
-    if (computedGlobalRead) header.push(globalValuesInstall(lowerer, computedGlobalRead, loc0));
+    // A module that reads builtin globals through the global object, by
+    // computed names or through a sloppy-mode function's `this`, installs
+    // the program's lookup before its body runs.
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

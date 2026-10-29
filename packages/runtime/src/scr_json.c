@@ -19270,26 +19270,29 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
   return NULL;
 }
 
-bool scr_dyn_is_frozen(const ScrDyn *value) {
-  if (scr_dyn_class_reflection_fence(value)) return false;
+/* Object.isFrozen of `value` with `self` for the values it contains. A value
+ * without an integrity level the runtime models refuses with SC2020 when
+ * `refuse` is set, and otherwise answers false: Object.freeze refuses such
+ * a value too, so it is never frozen. */
+static bool scr_dyn_frozen_answer(const ScrDyn *value, bool (*self)(const ScrDyn *), bool refuse) {
   if (scr_dyn_published_object(value)) return true;
   bool answer;
-  if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
+  if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, self, &answer)) return answer;
   ScrMap *collection = scr_dyn_native_collection(value);
   if (collection) return !scr_map_is_extensible(collection);
-  if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
+  if (value->symbol_properties && !self(value->symbol_properties)) return false;
   if (scr_dyn_plain_fn(value)) {
     ScrDyn *table = scr_dyn_fn_existing_table(value);
-    answer = table && scr_dyn_is_frozen(table);
+    answer = table && self(table);
     scr_dyn_release(table);
     return answer;
   }
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
-      (!value->v.arr.properties || scr_dyn_is_frozen(value->v.arr.properties));
+      (!value->v.arr.properties || self(value->v.arr.properties));
   if (value->kind == SCR_DYN_BYTES)
     return (value->v.bytes->is_data_view || value->v.bytes->len == 0) && value->v.bytes->properties &&
-      scr_dyn_is_frozen(value->v.bytes->properties);
+      self(value->v.bytes->properties);
   if (value->kind == SCR_DYN_OBJ && !value->copied_from_native) {
     if (!value->non_extensible) return false;
     for (size_t i = 0; i < value->v.obj.len; i++) {
@@ -19301,9 +19304,27 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NUM ||
       value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL) return true;
+  if (!refuse) return false;
   static const char message[] = "Object.isFrozen of this native value has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return false;
+}
+
+bool scr_dyn_is_frozen(const ScrDyn *value) {
+  if (scr_dyn_class_reflection_fence(value)) return false;
+  return scr_dyn_frozen_answer(value, scr_dyn_is_frozen, true);
+}
+
+/* A record checked from `value` copies its integrity: whether `value` is
+ * frozen, answered for every value the check can meet. A proxy is frozen
+ * exactly when its target is (the proxy invariants). Object.prototype and
+ * class constructors, which Object.isFrozen fences, and native values
+ * without a modeled integrity level are not frozen. */
+bool scr_dyn_checked_record_frozen(const ScrDyn *value) {
+  while (value && value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
+  if (!value || value == scr_builtin_object_prototype) return false;
+  if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj && !value->v.fn.class_obj->static_data) return false;
+  return scr_dyn_frozen_answer(value, scr_dyn_checked_record_frozen, false);
 }
 
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {
