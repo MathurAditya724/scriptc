@@ -2659,8 +2659,12 @@ void scr_process_memory_usage_take(void) {
   scr_memory_usage_sample[0] = rss;
   scr_memory_usage_sample[1] = total;
   scr_memory_usage_sample[2] = used;
-  scr_memory_usage_sample[3] = 0;
-  scr_memory_usage_sample[4] = 0;
+  /* external is the storage of the ArrayBuffers and typed arrays this
+   * instance holds, and arrayBuffers adds the SharedArrayBuffer storage of
+   * the process, as Node counts them. */
+  double local = scr_array_buffers_held(false);
+  scr_memory_usage_sample[3] = local;
+  scr_memory_usage_sample[4] = local + scr_array_buffers_held(true);
 }
 
 double scr_process_memory_usage_field(double k) {
@@ -4447,7 +4451,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
       scr_bytes_release(buf);
     }
   }
-  ScrBytes window = {SIZE_MAX, length, SCR_BYTES_U8, data, NULL};
+  ScrBytes window = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = data};
   position = isfinite(position) && position >= 0 && position <= 9007199254740991.0
     ? trunc(position) : -1;
   double transferred = writing
