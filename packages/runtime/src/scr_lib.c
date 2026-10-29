@@ -3935,7 +3935,7 @@ void scr_fs_futimes(double fd, double atime, double mtime) {
  * supplies pread(2). Windows follows libuv's synchronous-handle recipe:
  * ReadFile with an OVERLAPPED byte offset, then restore the handle position
  * because synchronous ReadFile updates it even when OVERLAPPED is present. */
-static ssize_t scr_fs_pread(int fd, void *data, size_t length, double position) {
+static ssize_t scr_fs_pread(int fd, void *data, size_t length, int64_t position) {
 #ifdef _WIN32
   HANDLE handle = (HANDLE)_get_osfhandle(fd);
   if (handle == INVALID_HANDLE_VALUE) {
@@ -4311,14 +4311,11 @@ void scr_fs_write_file_fd(double fd, ScrStr *data) {
  * throw the RangeError shape. Position -1 means the fd's current offset;
  * nonnegative positions do not advance it. Returns the byte count the OS
  * reports; errors carry the errno name like the other fd operations. */
-double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
-                        double position) {
-  size_t bytelen = buf->len; /* u8 buffers: elem count == byte count */
+/* fs.readSync's offset check: an integer in [0, 2^53 - 1], Node's exact
+ * texts (validateOffset); false with ERR_OUT_OF_RANGE pending otherwise. */
+bool scr_fs_read_offset_chk(double offset) {
   char msg[160];
   int mlen;
-  /* Node's exact texts: offset validates against MAX_SAFE_INTEGER's range
-   * form, length against the remaining window (validateOffset vs the
-   * buffer-bounds check in fs.readSync). */
   char numbuf[40];
   if (!(isfinite(offset) && trunc(offset) == offset)) {
     char recv[48];
@@ -4327,7 +4324,7 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                     "The value of \"offset\" is out of range. It must be an integer. Received %s",
                     recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
+    return false;
   }
   if (offset < 0 || offset > 9007199254740991.0) {
     numbuf[scr_f64_to_str(offset, numbuf)] = 0;
@@ -4335,8 +4332,19 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                     "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
                     numbuf);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
+    return false;
   }
+  return true;
+}
+
+double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
+                        double position) {
+  char msg[160];
+  int mlen;
+  /* Node's exact texts: offset validates against MAX_SAFE_INTEGER's range
+   * form, length against the remaining window (validateOffset vs the
+   * buffer-bounds check in fs.readSync). */
+  if (!scr_fs_read_offset_chk(offset)) return 0;
   if (!(isfinite(position) && trunc(position) == position)) {
     char recv[48];
     scr_num_received(position, recv);
@@ -4355,6 +4363,16 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
+  return scr_fs_read_sync_at(fd, buf, offset, length, (int64_t)position);
+}
+
+/* fs.readSync after its offset and position checks: `position` is exact,
+ * so a bigint position past 2^53 reads where it says. */
+double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double length,
+                           int64_t position) {
+  size_t bytelen = buf->len; /* u8 buffers: elem count == byte count */
+  char msg[160];
+  int mlen;
   /* `length |= 0`, then Node's order: a zero length reads nothing after
    * the offset and position checks; otherwise the buffer must not be
    * empty and the window must fit it (validateOffsetLengthRead). */
@@ -4417,7 +4435,7 @@ double scr_fs_read_zero(double fd, double position) {
   if (!scr_fs_write_fd_valid(fd)) return 0;
   uint8_t dummy;
   ssize_t n = position < 0 ? read((int)fd, &dummy, 0)
-    : scr_fs_pread((int)fd, &dummy, 0, position);
+    : scr_fs_pread((int)fd, &dummy, 0, (int64_t)position);
   if (n < 0) scr_fs_throw_nopath(errno, "read");
   return 0;
 }
@@ -4498,7 +4516,8 @@ int scr_fs_raw_open(const char *path, int flags, int mode) {
 }
 
 int64_t scr_fs_raw_read(int fd, void *data, size_t length, double position) {
-  ssize_t n = position >= 0 ? scr_fs_pread(fd, data, length, position) : read(fd, data, length);
+  ssize_t n = position >= 0 ? scr_fs_pread(fd, data, length, (int64_t)position)
+                            : read(fd, data, length);
   return n < 0 ? -errno : n;
 }
 
