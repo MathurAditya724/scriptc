@@ -3859,6 +3859,9 @@ export class Lowerer {
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
+  /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
+   * stream operation the native streams lack; undefined until asked. */
+  typedWebStreams: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
@@ -4493,6 +4496,7 @@ export class Lowerer {
     "sloppyThisGlobalReads",
     "globalLookupNames",
     "namesWebStreamClass",
+    "typedWebStreams",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
