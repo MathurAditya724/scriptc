@@ -5419,25 +5419,46 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // SEVERAL PROMISE ARMS are ONE: `Promise<A> | Promise<B>` is
+      // `Promise<A | B>`. A promise arm's tag IS the `instanceof Promise`
+      // test, so JavaScript cannot tell the arms apart at run time (both
+      // answer true, both `await` to a value of their payload), and the
+      // merged payload union is exactly what `await` produces either way.
+      // The merge happens here, in the union the checker gave us, so every
+      // use site (a declaration slot, an argument, an `await`, `.then`)
+      // sees the same one-promise-arm layout; the conversion of a
+      // `Promise<A>` value into it is the checked promise-payload widening
+      // (promisePayloadWidens / promiseWiden). A payload that cannot ride
+      // that union (a promise of a promise, a regex or generator payload)
+      // keeps the whole union fenced.
+      const mergedArms = mergePromiseArms(arms, ctx);
+      if (mergedArms === null) return null;
+      // Promise arms were the whole union (`Promise<void> | Promise<undefined>`
+      // merges to the plain `Promise<void>`): a one-armed union has no
+      // representation and needs none — the merge left the arm alone.
+      if (mergedArms.length === 1) {
+        if (unions.recursivePending(widened)) return null;
+        return mergedArms[0]!;
+      }
       if (
-        arms.some(
+        mergedArms.some(
           (a) =>
             a.kind === "void" ||
             a.kind === "union" ||
             a.kind === "dyn" ||
             // A generator arm only comes from an Iterable<T> (an optional
             // one keeps its unit arms beside the iterable union's).
-            (a.kind === "generator" && iterableArmsElem(arms) === null),
+            (a.kind === "generator" && iterableArmsElem(mergedArms) === null),
         ) ||
-        !maybePromiseUnionOk(parts, arms, ctx)
+        !maybePromiseUnionOk(parts, mergedArms, ctx)
       ) {
         return null;
       }
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      mergedArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
       const discriminant =
-        unionDiscriminant(recordParts, arms, ctx) ??
+        unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
-          ? remapUnionDiscriminant(substitutedUnions[0]!, arms)
+          ? remapUnionDiscriminant(substitutedUnions[0]!, mergedArms)
           : undefined);
       if (unions.recursivePending(widened)) {
         // The knot closed through this union. A frame that resolved
@@ -5446,9 +5467,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // same ts.Type answers differently per instantiation — so
         // recursive generic-open unions stay fenced.
         if (contextResolutions !== sensitivityAtEntry) return null;
-        return { kind: "union", unionId: unions.finalizeRecursive(widened, arms, discriminant) };
+        return {
+          kind: "union",
+          unionId: unions.finalizeRecursive(widened, mergedArms, discriminant),
+        };
       }
-      return { kind: "union", unionId: unions.intern(arms, discriminant) };
+      return { kind: "union", unionId: unions.intern(mergedArms, discriminant) };
     } finally {
       unions.inProgress.delete(widened);
     }
@@ -8871,6 +8895,79 @@ function maybePromiseUnionOk(
   return maybePromiseThenableArm(parts, ctx) === null;
 }
 
+/** Merge the promise arms of one union into a single `Promise<A | B>`
+ * (mapTypeInner's union rule): JavaScript-wise the arms are
+ * indistinguishable — `instanceof Promise` answers true for both, and
+ * `await` settles to the payload union — so the merged arm is the same
+ * value in the same slot. Payloads join like union arms: a `void` payload
+ * becomes the undefined unit, a payload that is already a union flattens,
+ * and a checked-dynamic payload (`Promise<unknown>`) absorbs the arms the
+ * checked-dynamic representation holds faithfully (dynSubsumableUnionArm).
+ * Null keeps the whole union fenced: a promise-of-a-promise payload, a
+ * payload with no union home (regex, generator), or a dyn payload beside an
+ * arm whose semantics would degrade. */
+function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
+  let promiseArms = 0;
+  for (const arm of arms) if (arm.kind === "promise") promiseArms++;
+  if (promiseArms < 2) return arms;
+  const payloads: IrType[] = [];
+  let dynamic = false;
+  for (const arm of arms) {
+    if (arm.kind !== "promise") continue;
+    const inner = arm.inner;
+    if (inner.kind === "void") {
+      payloads.push(UNDEFINED_T);
+      continue;
+    }
+    if (inner.kind === "dyn") {
+      dynamic = true;
+      continue;
+    }
+    if (inner.kind === "union") {
+      const substituted = ctx.unions.get(inner.unionId);
+      if (!substituted?.arms.length) return null;
+      payloads.push(...substituted.arms);
+      continue;
+    }
+    payloads.push(inner);
+  }
+  if (dynamic) {
+    if (!payloads.every((arm) => dynSubsumableUnionArm(arm, ctx))) return null;
+    payloads.length = 0;
+    payloads.push(DYN);
+  }
+  const byKey = new Map<string, IrType>();
+  for (const arm of payloads) {
+    // A promise payload has no arm home beside the others: `await` of the
+    // merged promise would adopt it as a thenable, which no union tag does.
+    if (arm.kind === "promise") return null;
+    byKey.set(typeKey(arm), arm);
+  }
+  const payload = [...byKey.values()];
+  if (payload.length === 0) return null;
+  // Every arm is the undefined unit: the promise never settles a value,
+  // exactly `Promise<void>`.
+  if (payload.every((arm) => arm.kind === "undefinedT")) payload.length = 0;
+  // One payload arm is that arm itself (a regex or a promise payload has a
+  // promise slot but no union arm); a JOINT payload is a union, so its arms
+  // need union homes.
+  const inner: IrType | null =
+    payload.length === 0
+      ? VOID
+      : payload.length === 1
+        ? payload[0]!
+        : payload.every((arm) => armHasUnionHome(arm))
+          ? {
+              kind: "union",
+              unionId: ctx.unions.intern(
+                [...payload].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
+              ),
+            }
+          : null;
+  const merged: IrType | null = inner === null ? null : { kind: "promise", inner };
+  return merged === null ? null : [...arms.filter((arm) => arm.kind !== "promise"), merged];
+}
+
 /** The first non-promise constituent of a promise-armed union whose type
  * has a `then` member (a thenable data arm), or null. */
 function maybePromiseThenableArm(parts: readonly ts.Type[], ctx: TypeMapperCtx): ts.Type | null {
@@ -9025,7 +9122,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     const promiseArms = mappedArms.filter(({ mapped }) => mapped?.kind === "promise");
     if (promiseArms.length > 1) {
-      return `the union shape is supported, but it has several promise arms ('${text(promiseArms[0]!.p)}' and '${text(promiseArms[1]!.p)}'), and a compiled union holds at most one (the union tag is the 'instanceof Promise' test)`;
+      return `the union shape is supported, but its promise arms ('${text(promiseArms[0]!.p)}' and '${text(promiseArms[1]!.p)}') do not merge into one promise (their payloads have no common union layout)`;
     }
     if (promiseArms.length === 1 && dataArms.length > 1) {
       const callable = mappedArms.find(({ mapped }) => mapped?.kind === "func");

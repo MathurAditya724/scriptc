@@ -5127,6 +5127,13 @@ export class Lowerer {
     return this.classProtocols.usesCheckedIdentity(type);
   }
 
+  /** A record view a Map or Set answers: it keeps protocol identity but
+   * calls the collection's own methods, never a stored member. */
+  classCollectionView(type: ts.Type): boolean {
+    this.classProtocols ??= new ClassProtocols(this.checker, this.moduleOrder);
+    return this.classProtocols.collectionView(type);
+  }
+
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
    * of those), names checked protocol identity, is an owned runtime

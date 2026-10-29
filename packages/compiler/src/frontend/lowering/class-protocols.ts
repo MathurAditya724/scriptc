@@ -13,6 +13,11 @@ export class ClassProtocols {
   /** The value types of the string-keyed dictionaries that keep checked
    * identity (see markDictionaryViews). */
   private readonly dictionaryViews = new Set<ts.Type>();
+  /** The structural types a lib Map or Set flows into while it answers one
+   * of their members (see markIdentityFlows). They keep checked identity
+   * without protocol dispatch: their members are invoked on the collection
+   * itself, not read from a property bag. */
+  private readonly collectionViews = new Set<ts.Symbol>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -425,9 +430,16 @@ export class ClassProtocols {
     const added = [...marked].filter((symbol) => !before.has(symbol));
     // A copy of an instance drops the methods its class defines, so a view
     // that exposes one of them stays live wherever such an instance may
-    // arrive.
+    // arrive. A record view of a collection needs no protocol: its checked
+    // identity is the collection itself, and its members are the
+    // collection's own methods, which protocol dispatch would read from a
+    // property bag instead of invoking.
     const kept = new Set(
-      added.filter((symbol) => methodViews.has(symbol) || this.needsView(symbol, marked, facts)),
+      added.filter(
+        (symbol) =>
+          !this.collectionViews.has(symbol) &&
+          (methodViews.has(symbol) || this.needsView(symbol, marked, facts)),
+      ),
     );
     let grew = true;
     while (grew) {
@@ -501,8 +513,9 @@ export class ClassProtocols {
       }
       // A Pick or Omit view's values are instances of the class it views,
       // or of any other program class that has the view's members.
-      if (this.pickOfProgramClass(type)) {
-        add(type.getAliasTypeArguments()[0]!);
+      const viewed = this.pickViewOf(type, 0);
+      if (viewed !== null) {
+        add(viewed);
         for (const other of this.classesAcceptedBy(type))
           for (const related of this.classFamily(other, facts)) out.add(related);
         return;
@@ -634,6 +647,14 @@ export class ClassProtocols {
     );
   }
 
+  /** Whether one of `names` is a member the collection type itself
+   * declares (`has`, `get`, `size`, `keys`, ...). */
+  private exposesCollectionMember(collection: ts.Type, names: ReadonlySet<string>): boolean {
+    return this.checker
+      .getPropertiesOfType(collection)
+      .some((property) => names.has(ts.symbolName(property)));
+  }
+
   /** Whether class `symbol` declares a get or set accessor for one of
    * `names`. */
   private hasAccessorFor(symbol: ts.Symbol, names: ReadonlySet<string>): boolean {
@@ -698,15 +719,67 @@ export class ClassProtocols {
   /** `Pick<C, K>` or `Omit<C, K>` over a program class instance type: a
    * view of the class's own members, spelled inline instead of as an
    * interface. Like an interface the class matches, a view that exposes a
-   * method needs a live receiver (see protocol). */
+   * method needs a live receiver (see protocol). A program type alias of
+   * such a view names the same view (`type V = Pick<C, K>`), so its
+   * declaration is resolved to the Pick/Omit it spells. */
   private pickOfProgramClass(type: ts.Type): boolean {
+    return this.pickViewOf(type, 0) !== null;
+  }
+
+  /** The program class instance this view views, resolving program type
+   * aliases of views (`type A = B`, `type B = Pick<C, K>`) up to a small
+   * depth; null for everything else. */
+  private pickViewOf(type: ts.Type, depth: number): ts.Type | null {
+    if (depth > 8) return null;
     const alias = type.getAliasSymbol();
-    if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
-      return false;
-    if (!alias.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile))
-      return false;
-    const source = type.getAliasTypeArguments()[0];
-    return source !== undefined && this.isProgramClassInstance(source);
+    if (alias === undefined) return null;
+    if (this.isPickOrOmitAlias(alias)) {
+      const source = type.getAliasTypeArguments()[0];
+      return source !== undefined && this.isProgramClassInstance(source) ? source : null;
+    }
+    const declaration = this.programTypeAlias(alias);
+    return declaration === null ? null : this.pickViewNode(declaration.type, depth + 1);
+  }
+
+  /** The class instance a view's type node views. The resolved type of a
+   * program alias is the alias itself, so the reference is read by name:
+   * `Pick<C, K>` / `Omit<C, K>` keep the class it views, and another alias
+   * is followed through its declaration. */
+  private pickViewNode(node: ts.TypeNode, depth: number): ts.Type | null {
+    if (depth > 8) return null;
+    while (ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (!ts.isTypeReferenceNode(node)) return null;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(node.typeName));
+    if (symbol === undefined) return null;
+    if (this.isPickOrOmitAlias(symbol)) {
+      const sourceNode = node.typeArguments?.nodes[0];
+      const source =
+        sourceNode === undefined
+          ? undefined
+          : attempt(() => this.checker.getTypeFromTypeNode(sourceNode));
+      return source !== undefined && this.isProgramClassInstance(source) ? source : null;
+    }
+    const declaration = this.programTypeAlias(symbol);
+    return declaration === null ? null : this.pickViewNode(declaration.type, depth + 1);
+  }
+
+  /** The lib's `Pick` or `Omit` utility type. */
+  private isPickOrOmitAlias(symbol: ts.Symbol): boolean {
+    const name = ts.symbolName(symbol);
+    if (name !== "Pick" && name !== "Omit") return false;
+    return symbol.declarations.every(
+      (declaration) => declaration.getSourceFile().isDeclarationFile,
+    );
+  }
+
+  /** The program's own declaration of a type alias, if the symbol has one. */
+  private programTypeAlias(symbol: ts.Symbol): ts.TypeAliasDeclaration | null {
+    const declaration = symbol.declarations.find(
+      (candidate) =>
+        ts.isTypeAliasDeclaration(candidate) &&
+        !ts.getSourceFileOfNode(candidate).isDeclarationFile,
+    );
+    return declaration !== undefined && ts.isTypeAliasDeclaration(declaration) ? declaration : null;
   }
 
   /** String-keyed dictionaries (`Record<string, V>`, `{ [key: string]: V }`)
@@ -866,6 +939,58 @@ export class ClassProtocols {
       .find((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0)?.type;
   }
 
+  /** A lib Map, Set, ReadonlyMap or ReadonlySet: a live collection. Handed
+   * to a structural type that spells one of its members, a copy would answer
+   * from its own fields and miss later writes to the collection, so the view
+   * stays the collection itself (checked-dynamic identity). */
+  private isBuiltinCollection(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    const symbol = target?.getSymbol() ?? type.getSymbol();
+    if (symbol === undefined) return false;
+    const name = ts.symbolName(symbol);
+    if (name !== "Map" && name !== "Set" && name !== "ReadonlyMap" && name !== "ReadonlySet")
+      return false;
+    return (
+      (symbol.flags & ts.SymbolFlags.Class) === 0 &&
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
+  /** A builtin collection with an `any` or `unknown` type argument is
+   * UNTYPED (`new Map()`). It cannot back a structural view narrower than
+   * the values it may yield — `get` answers `any`, which the view declares
+   * as its own member type — so it keeps the record-shape refusal rather
+   * than carrying identity into the view. */
+  private isUntypedCollection(type: ts.Type): boolean {
+    if (!type.isTypeReference()) return true;
+    const args = this.checker.getTypeArguments(type);
+    return (
+      args.length === 0 ||
+      args.some((arg) => (arg.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
+    );
+  }
+
+  /** A lib Error, TypeError, ... instance type (RUNTIME_ERROR_CLASSES' lib
+   * names). Its fields are writable and its checked-dynamic view is the
+   * error itself, so a record built from it would miss later writes. */
+  private isBuiltinError(type: ts.Type): boolean {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    if (!ERROR_LIB_NAMES.has(ts.symbolName(symbol))) return false;
+    return (
+      (symbol.flags & ts.SymbolFlags.Class) === 0 &&
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -888,6 +1013,14 @@ export class ClassProtocols {
       return element !== undefined && this.carriesIdentity(element, marked);
     }
     if (this.isProgramClassInstance(type)) return true;
+    // A Map or Set is a live collection: a record built from it answers the
+    // members it copies once and misses every later write. An untyped
+    // `new Map()` cannot back a narrower view (see isUntypedCollection), so
+    // only a fully typed collection carries identity into the view.
+    if (this.isBuiltinCollection(type)) return !this.isUntypedCollection(type);
+    // A builtin Error keeps its own identity too: extra fields the program
+    // puts on it (a status, a body) belong to the error, not to a copy.
+    if (this.isBuiltinError(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
     const symbol = type.getSymbol();
@@ -959,7 +1092,27 @@ export class ClassProtocols {
     const from = source.getSymbol();
     if (from === symbol) return false;
     const facts = this.facts;
+    let collectionGrew = false;
     if (facts !== null) {
+      // A Map or Set that reaches the view, which answers one of its
+      // members: a record copy has no live backing behind `has`, `get` or
+      // `size`, and Node's answer changes with every later write. The view
+      // keeps checked identity, but not protocol dispatch: its members are
+      // the collection's own methods. A collection view's value handed on
+      // to another structural type is the same collection, so that view
+      // answers through it too.
+      const collection = this.isBuiltinCollection(source)
+        ? this.exposesCollectionMember(
+            source,
+            new Set(
+              this.checker.getPropertiesOfType(target).map((property) => ts.symbolName(property)),
+            ),
+          )
+        : from !== undefined && this.collectionViews.has(from);
+      if (collection && !this.collectionViews.has(symbol)) {
+        this.collectionViews.add(symbol);
+        collectionGrew = true;
+      }
       // The flow: the source's classes and marked type reach `symbol`.
       const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
       for (const origin of this.originsOf(source, facts)) origins.add(origin);
@@ -971,9 +1124,23 @@ export class ClassProtocols {
         facts.flows.set(from, flows);
       }
     }
-    if (marked.has(symbol)) return false;
+    // A view marked earlier that becomes a collection view still changes
+    // the fixpoint: the views its values flow into are asked again.
+    if (marked.has(symbol)) return collectionGrew;
     marked.add(symbol);
     return true;
+  }
+
+  /** Whether `type` is a structural view that a Map or Set reaches and that
+   * answers through the collection's own methods (see markIdentityFlows).
+   * Such a view keeps checked identity but never protocol dispatch: there
+   * is no stored member to read, and the collection answers the call. */
+  collectionView(type: ts.Type): boolean {
+    this.index();
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts.constituentTypes(type).some((part) => this.collectionView(part));
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.collectionViews.has(symbol);
   }
 
   /** Class-backed protocols require live receiver dispatch. Other interfaces,
@@ -995,9 +1162,12 @@ export class ClassProtocols {
     // it (a literal whose methods read `this`) or when it receives existing
     // objects (markDictionaryViews).
     const dictionaryValue = this.dictionaryValueType(type);
+    const view = type.getSymbol();
     const answer =
       this.protocol(type) ||
-      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue));
+      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue)) ||
+      // A record view of a Map or Set answers through the collection itself.
+      (view !== undefined && this.collectionViews.has(view));
     this.answers.set(type, answer);
     return answer;
   }
@@ -1061,6 +1231,22 @@ interface FlowFacts {
 
 /** The empty answer of the symbol maps above. */
 const NO_SYMBOLS: ReadonlySet<ts.Symbol> = new Set();
+
+/** The lib names RUNTIME_ERROR_CLASSES gives the runtime error encoding
+ * (`%Error`, `%TypeError`, ...; ir.ts). */
+const ERROR_LIB_NAMES = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "DOMException",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AssertionError",
+  "SuppressedError",
+]);
 
 /** Calls of these namespaces and functions observe whole objects. */
 const OBSERVER_NAMESPACES = new Set(["console", "JSON", "Object", "Reflect", "util", "assert"]);
