@@ -162,9 +162,24 @@ test("jams a constant-count loop whose inner loop exits once its accumulator is 
   expect(breaks).toBe(1);
   const last = inner.body[inner.body.length - 1]!;
   expect(last.kind).toBe("if");
-  // Each copy keeps its own accumulator and lanes; `post` runs in order.
+  // It is tested every fourth iteration: `(j & 3) === 3 && ...`.
+  if (last.kind !== "if" || last.cond.kind !== "logical") throw new Error("expected an && exit");
+  const fourth = last.cond.left;
+  expect(fourth.kind === "bin" && fourth.op === "===" && fourth.left.kind === "bin").toBe(true);
+  if (fourth.kind === "bin" && fourth.left.kind === "bin") {
+    expect(fourth.left.op).toBe("&");
+    expect(fourth.left.left.kind === "varRef" && fourth.left.left.localId).toBe("j");
+  }
+  // The copies take turns statement by statement.
+  const firstDecls = inner.body.slice(0, 4);
+  expect(firstDecls.every((s) => s.kind === "varDecl")).toBe(true);
+  expect(new Set(firstDecls.map((s) => (s.kind === "varDecl" ? s.localId : ""))).size).toBe(4);
+  // Each copy keeps its own accumulator and lanes; each local's copies sit
+  // next to each other; `post` runs in order.
   const added = out.functions[0]!.locals.filter((local) => local.id.startsWith("%jam."));
   expect(added.filter((local) => local.name === "%jam.b").length).toBe(4);
+  for (let at = 0; at < added.length; at += 4)
+    expect(new Set(added.slice(at, at + 4).map((local) => local.name)).size).toBe(1);
   const block = body[1]!;
   expect(block.kind).toBe("block");
   if (block.kind !== "block") return;
