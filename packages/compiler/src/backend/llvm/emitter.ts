@@ -561,6 +561,10 @@ export interface LlvmTargetOptions {
   debugSources?: ReadonlyMap<string, string>;
   /** Pointer width of the target C ABI. Native targets are 64-bit today. */
   pointerBits?: 32 | 64;
+  /** Unions emitted as tagged boxes whatever their arms, for tests of the
+   * box paths: in a program, a union that has a pointer representation
+   * (nullable-unions.ts) never holds a box. */
+  boxedUnions?: ReadonlySet<string>;
   /** Select the WASI libc entry-point convention. */
   wasi?: boolean;
   /** Library archive assembly may move the volatile identity getters into a
@@ -2089,6 +2093,7 @@ export class LlEmitter {
       options.debugSources === undefined,
       this.nodeIndex,
       options.pointerBits !== 32,
+      options.boxedUnions,
     );
     this.heapCensus = heapCensusOf(mod, this.nullableUnions);
     for (const decl of this.heapCensus?.declarations() ?? []) this.declare(decl);
