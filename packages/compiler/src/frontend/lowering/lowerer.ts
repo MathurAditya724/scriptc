@@ -2118,24 +2118,51 @@ export function builtinValueNameOf(node: ts.Node, lowerer: Lowerer): string | nu
       return builtinModuleFnOf(lowerer, imported.module, imported.member)?.valueName ?? null;
     const symbol = lowerer.resolveValueSymbol(n);
     const declaration = symbol?.valueDeclaration;
+    if (!symbol || seen.has(symbol) || !declaration) return null;
+    seen.add(symbol);
+    // A member destructured from a module or the process global
+    // (`const { cwd } = process`).
+    if (ts.isBindingElement(declaration)) {
+      const pattern = declaration.parent;
+      const holder = pattern?.parent;
+      const key = declaration.propertyName ?? declaration.name;
+      if (
+        declaration.dotDotDotToken ||
+        !pattern ||
+        !ts.isObjectBindingPattern(pattern) ||
+        !holder ||
+        !ts.isVariableDeclaration(holder) ||
+        !holder.initializer ||
+        (ts.getCombinedNodeFlags(holder) & ts.NodeFlags.Const) === 0 ||
+        !ts.isIdentifier(key)
+      )
+        return null;
+      return builtinMemberValueName(lowerer, holder.initializer, key.text);
+    }
     if (
-      !symbol ||
-      seen.has(symbol) ||
-      !declaration ||
       !ts.isVariableDeclaration(declaration) ||
       !declaration.initializer ||
       (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
     )
       return null;
-    seen.add(symbol);
     n = declaration.initializer;
   }
   if (!ts.isPropertyAccessExpression(n)) return null;
-  const module = lowerer.isStdlibGlobal(n.expression, "process")
+  return builtinMemberValueName(lowerer, n.expression, n.name.text);
+}
+
+/** BuiltinModuleFn.valueName of `member` read from `receiver`, the process
+ * global or a builtin module's namespace; null for anything else. */
+function builtinMemberValueName(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  member: string,
+): string | null {
+  const module = lowerer.isStdlibGlobal(receiver, "process")
     ? "process"
-    : lowerer.builtinNamespaceModuleOf(n.expression);
+    : lowerer.builtinNamespaceModuleOf(receiver);
   if (module === null) return null;
-  return builtinModuleFnOf(lowerer, module, n.name.text)?.valueName ?? null;
+  return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
@@ -2165,14 +2192,18 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
-    const p = n.parent;
-    if (p && ts.isVariableDeclaration(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    // An anonymous function takes the name of the binding or property it
+    // initializes, through parentheses (`const f = (function () {})`).
+    let outer: ts.Node = n;
+    while (outer.parent && ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+    const p = outer.parent;
+    if (p && ts.isVariableDeclaration(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isBindingElement(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    if (p && ts.isBindingElement(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
-    if (p && ts.isPropertyAssignment(p) && p.initializer === n && ts.isIdentifier(p.name)) {
+    if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
   }

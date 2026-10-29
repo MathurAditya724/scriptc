@@ -1897,6 +1897,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
       },
+      // util.debug is util.debuglog, under its name.
       debug: {
         fn: "util.debuglog",
         params: [DYN, DYN],
@@ -1905,6 +1906,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "required", type: DYN },
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
+        valueName: "debuglog",
       },
     },
     // The util/types spoke supplies the probe name to the shared brand check.

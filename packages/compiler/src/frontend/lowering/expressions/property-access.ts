@@ -1209,15 +1209,15 @@ export function lowerPropertyAccessExpr(
         (id) => lowerer.unions.get(id),
       )
     ) {
-      // A builtin function value keeps Node's name, and its length when that
-      // is not its adapter's parameter count (`Math.max.length` is 2). Any
-      // other function is named by its definition, through const aliases.
-      const identity = lowerer.builtinFunctionIdentity(probed);
+      // A function is named by its definition, through const aliases: a
+      // builtin module member whose Node name differs from the member
+      // (`process.cwd` is `wrappedCwd`) by the module table, anything else
+      // by the property or function it reads. A builtin function value
+      // keeps its length when that is not its adapter's parameter count
+      // (`Math.max.length` is 2).
       const fnName =
-        identity.fnName ??
-        builtinValueNameOf(expr.expression, lowerer) ??
-        jsFuncNameOf(expr.expression, lowerer);
-      const fnLength = identity.fnLength;
+        builtinValueNameOf(expr.expression, lowerer) ?? jsFuncNameOf(expr.expression, lowerer);
+      const fnLength = lowerer.builtinFunctionIdentity(probed).fnLength;
       const boxed: IrExpr = {
         kind: "dynFrom",
         value: probed,
