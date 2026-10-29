@@ -56,6 +56,36 @@ show("array-function-call", () => {
   console.log("never", first);
 });
 
+// A source that may be null or undefined, and data arms holding a
+// generator, which has no untyped form.
+function* count() {
+  yield 1;
+  yield 2;
+}
+function pick(kind) {
+  if (kind === 0) return null;
+  if (kind === 1) return undefined;
+  return { counter: count(), label: "picked" };
+}
+function counters(present) {
+  return present ? [count(), count()] : null;
+}
+show("object-null-arm", () => {
+  const { counter } = pick(0);
+  console.log("never", counter);
+});
+show("object-undefined-arm", () => {
+  const { label } = pick(1);
+  console.log("never", label);
+});
+show("array-generator-elements", () => {
+  const [first] = counters(false);
+  console.log("never", first);
+});
+const { counter, label } = pick(2);
+const [left, right] = counters(true);
+console.log(label, [...counter].join(","), [...left, ...right].join(","));
+
 // Sources that hold a value bind as before.
 const { index } = "abc".match(/b/);
 const [whole] = "abc".match(/c/);

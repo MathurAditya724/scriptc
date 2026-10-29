@@ -2581,14 +2581,46 @@ export function lowerDestructuringDecl(
       (arm.kind === "array" || arm.kind === "record")
     ) {
       const tag = def.arms.indexOf(arm);
+      const unionId = init.type.unionId;
       const utmp = lowerer.declareHiddenLocal("%destrU", init.type);
       out.push({ kind: "varDecl", localId: utmp.id, init, loc });
       const uref: IrExpr = { kind: "varRef", localId: utmp.id, type: init.type, loc };
+      // The failure branch holds one of the unit arms: the check reads it
+      // as the dyn null or undefined it is, so the data arm needs no dyn
+      // form (a record holding a generator has none).
+      const unitValue = (): IrExpr => {
+        const unitOf = (t: IrType): IrExpr =>
+          lowerer.coerceToExpected(
+            { kind: "unitLit", unit: t.kind === "nullT" ? "null" : "undefined", type: t, loc },
+            DYN,
+          );
+        const units = def.arms.filter(isUnitType);
+        const last = units[units.length - 1]!;
+        return units.slice(0, -1).reduceRight<IrExpr>(
+          (rest, t) => ({
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: def.arms.indexOf(t),
+              negated: false,
+              value: uref,
+              type: BOOL,
+              loc,
+            },
+            then: unitOf(t),
+            else_: rest,
+            type: DYN,
+            loc,
+          }),
+          unitOf(last),
+        );
+      };
       const spelling = destrSpellingOf(src);
       const check: IrExpr | null = ts.isArrayBindingPattern(decl.name)
         ? {
             kind: "dynIterN",
-            value: lowerer.coerceToExpected(uref, DYN),
+            value: unitValue(),
             count: decl.name.elements.nodes.length,
             ...(dynSpell ? { notIterableMessage: dynSpell } : {}),
             type: DYN,
@@ -2597,7 +2629,7 @@ export function lowerDestructuringDecl(
         : spelling !== null
           ? {
               kind: "dynDestrCheck",
-              value: lowerer.coerceToExpected(uref, DYN),
+              value: unitValue(),
               spelling,
               ...firstPatternProp(lowerer, decl.name as ts.ObjectBindingPattern),
               type: DYN,
